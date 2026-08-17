@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.pyc
+build/
+dist/
+wheels/
+*.egg-info
+.python-version
+
+# Virtual environments
+.venv
+venv/
+.env.example
+.env
+
+# Dependency directories
+chroma_db/
+data/
+*.egg-info/
+dist/
+build/
+.DS_Store
+

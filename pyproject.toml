@@ -1,0 +1,10 @@
+[project]
+name = "private-knowledge-assistant"
+version = "0.1.0"
+description = "Private Knowledge Assistant - RAG based Document Q&A"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

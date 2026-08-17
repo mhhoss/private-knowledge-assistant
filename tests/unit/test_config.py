@@ -1,0 +1,183 @@
+"""Configuration resolution: provider fallbacks and rejected values."""
+
+from __future__ import annotations
+
+import pytest
+from llama_index.core.base.embeddings.base import BaseEmbedding
+from llama_index.core.llms import LLM
+from pydantic import ValidationError
+
+from app.config import Settings, build_embedding_model, build_llm
+from tests.conftest import settings_kwargs
+
+pytestmark = pytest.mark.usefixtures("clean_settings_env")
+
+
+class TestEmbeddingProviderFallback:
+    def test_embedding_defaults_to_llm_credentials(self) -> None:
+        settings = Settings(
+            **settings_kwargs(llm_api_key="key-1", llm_base_url="https://gateway/v1")
+        )
+        assert settings.embedding_api_key == "key-1"
+        assert settings.embedding_base_url == "https://gateway/v1"
+
+    def test_embedding_provider_can_be_separate(self) -> None:
+        """ADR-5: gateways that serve chat but not embeddings."""
+        settings = Settings(
+            **settings_kwargs(
+                llm_api_key="router-key",
+                llm_base_url="https://openrouter.ai/api/v1",
+                embedding_api_key="openai-key",
+                embedding_base_url="https://api.openai.com/v1",
+            )
+        )
+        assert settings.embedding_api_key == "openai-key"
+        assert settings.embedding_base_url == "https://api.openai.com/v1"
+        assert settings.llm_api_key == "router-key"
+
+
+class TestEmbeddingFingerprint:
+    def test_fingerprint_is_the_model_name(self) -> None:
+        settings = Settings(**settings_kwargs(embedding_model="multilingual-e5"))
+        assert settings.embedding_fingerprint == "multilingual-e5"
+
+    def test_fingerprint_ignores_base_url(self) -> None:
+        """ADR-8: the same model behind a different gateway is the same model."""
+        common = {"embedding_model": "text-embedding-3-small"}
+        direct = Settings(
+            **settings_kwargs(embedding_base_url="https://api.openai.com/v1", **common)
+        )
+        proxied = Settings(
+            **settings_kwargs(embedding_base_url="https://proxy.internal/v1", **common)
+        )
+        assert direct.embedding_fingerprint == proxied.embedding_fingerprint
+
+
+class TestValidation:
+    def test_overlap_must_be_smaller_than_chunk_size(self) -> None:
+        with pytest.raises(ValidationError, match="CHUNK_OVERLAP"):
+            Settings(**settings_kwargs(chunk_size=512, chunk_overlap=512))
+
+    def test_collection_name_must_satisfy_chroma_rules(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(**settings_kwargs(chroma_collection="kb"))
+
+    @pytest.mark.parametrize("score", [-0.1, 1.5])
+    def test_min_score_stays_within_similarity_range(self, score: float) -> None:
+        with pytest.raises(ValidationError):
+            Settings(**settings_kwargs(retrieval_min_score=score))
+
+    def test_top_k_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(**settings_kwargs(retrieval_top_k=0))
+
+
+class TestBuildEmbeddingModel:
+    """Regression coverage for `build_embedding_model`. No network calls: constructing
+    an OpenAI-compatible client never contacts the provider — only sending a request
+    would.
+    """
+
+    def test_accepts_a_catalog_openai_model_name(self) -> None:
+        settings = Settings(
+            **settings_kwargs(
+                embedding_model="text-embedding-3-small",
+                embedding_api_key="dummy-key",
+                embedding_base_url="http://localhost:9999/v1",
+            )
+        )
+        embed_model = build_embedding_model(settings)
+
+        assert isinstance(embed_model, BaseEmbedding)
+        assert embed_model.model_name == "text-embedding-3-small"
+
+    def test_accepts_an_arbitrary_non_catalog_model_name(self) -> None:
+        """`OpenAIEmbedding`'s `model=` argument is validated against a fixed enum of
+        legacy OpenAI names and previously rejected anything else — including a local
+        multilingual model like `bge-m3` served through an OpenAI-compatible gateway
+        (e.g. Ollama, TEI). `build_embedding_model` must use `model_name=` instead,
+        which bypasses that lookup, or R-08 ("switch providers via env vars, no code
+        change") is false for any model name outside that enum.
+        """
+        settings = Settings(
+            **settings_kwargs(
+                embedding_model="bge-m3",
+                embedding_api_key="dummy-key",
+                embedding_base_url="http://localhost:11434/v1",
+            )
+        )
+        embed_model = build_embedding_model(settings)
+
+        assert isinstance(embed_model, BaseEmbedding)
+        assert embed_model.model_name == "bge-m3"
+
+    def test_another_non_catalog_provider_model_name_also_works(self) -> None:
+        """Pins the fix as general, not a `bge-m3` special case."""
+        settings = Settings(
+            **settings_kwargs(
+                embedding_model="voyage-3",
+                embedding_api_key="dummy-key",
+                embedding_base_url="http://localhost:9999/v1",
+            )
+        )
+        embed_model = build_embedding_model(settings)
+
+        assert embed_model.model_name == "voyage-3"
+
+    def test_falls_back_to_llm_credentials_when_embedding_settings_are_unset(
+        self,
+    ) -> None:
+        """ADR-5's fallback still resolves before the client is built."""
+        settings = Settings(
+            **settings_kwargs(
+                llm_api_key="llm-key",
+                llm_base_url="http://localhost:9999/v1",
+                embedding_model="bge-m3",
+            )
+        )
+        embed_model = build_embedding_model(settings)
+
+        assert embed_model.api_key == "llm-key"
+        assert embed_model.api_base == "http://localhost:9999/v1"
+
+
+class TestBuildLlm:
+    def test_constructs_a_valid_llm_client_for_the_configured_model(self) -> None:
+        settings = Settings(
+            **settings_kwargs(
+                llm_model="gpt-4o-mini",
+                llm_api_key="dummy-key",
+                llm_base_url="http://localhost:9999/v1",
+            )
+        )
+        llm = build_llm(settings)
+
+        assert isinstance(llm, LLM)
+        assert llm.model == "gpt-4o-mini"
+
+    def test_accepts_an_arbitrary_non_catalog_model_name(self) -> None:
+        """The LLM client has no equivalent enum restriction — pinned here so a
+        regression there would be caught the same way as the embedding-side fix."""
+        settings = Settings(
+            **settings_kwargs(
+                llm_model="qwen/qwen-2.5-72b-instruct",
+                llm_api_key="dummy-key",
+                llm_base_url="https://openrouter.ai/api/v1",
+            )
+        )
+        llm = build_llm(settings)
+
+        assert llm.model == "qwen/qwen-2.5-72b-instruct"
+
+
+class TestEnvironmentBinding:
+    def test_reads_documented_variable_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LLM_MODEL", "gpt-from-env")
+        monkeypatch.setenv("EMBEDDING_MODEL", "embed-from-env")
+        monkeypatch.setenv("RETRIEVAL_TOP_K", "9")
+        settings = Settings(_env_file=None)
+        assert settings.llm_model == "gpt-from-env"
+        assert settings.embedding_model == "embed-from-env"
+        assert settings.retrieval_top_k == 9

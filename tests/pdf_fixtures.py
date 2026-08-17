@@ -90,7 +90,9 @@ def _content_stream(
 
 
 def _build_tounicode_cmap(charset: list[str]) -> bytes:
-    entries = "\n".join(f"<{i:02X}> <{ord(char):04X}>" for i, char in enumerate(charset))
+    entries = "\n".join(
+        f"<{i:02X}> <{ord(char):04X}>" for i, char in enumerate(charset)
+    )
     return f"""/CIDInit /ProcSet findresource begin
 12 dict begin
 begincmap

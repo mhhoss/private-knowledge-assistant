@@ -18,7 +18,9 @@ KUBERNETES_FA = "هزینه خوشه کوبرنتیز دوازده درصد اف
 UNRELATED_EN = "The cafeteria menu changed to include more vegetarian options."
 
 
-def seed(store: VectorStore, embed_model: StubEmbedding, documents: list[tuple]) -> None:
+def seed(
+    store: VectorStore, embed_model: StubEmbedding, documents: list[tuple]
+) -> None:
     """Index a set of (document_id, filename, file_type, text) documents."""
     for document_id, filename, file_type, text in documents:
         chunks = process_document(

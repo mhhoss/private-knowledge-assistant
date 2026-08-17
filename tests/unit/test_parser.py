@@ -25,7 +25,9 @@ def _squeeze(text: str) -> str:
     `pypdf`'s layout mode pads text with spaces to preserve column position; that is
     the parser's business, not this test's, so comparisons squeeze it away.
     """
-    return "\n\n".join(re.sub(r" +", " ", block).strip() for block in text.split("\n\n"))
+    return "\n\n".join(
+        re.sub(r" +", " ", block).strip() for block in text.split("\n\n")
+    )
 
 
 class TestDispatch:

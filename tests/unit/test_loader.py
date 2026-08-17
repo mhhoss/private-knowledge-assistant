@@ -42,7 +42,7 @@ class TestDetectFileType:
 
 class TestComputeDocumentId:
     def test_identical_content_yields_identical_id(self) -> None:
-        content = "same bytes".encode()
+        content = b"same bytes"
         assert compute_document_id(content) == compute_document_id(content)
 
     def test_different_content_yields_different_id(self) -> None:

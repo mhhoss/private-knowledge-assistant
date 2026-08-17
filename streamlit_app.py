@@ -11,6 +11,7 @@ presentation only.
 from __future__ import annotations
 
 import html
+from collections.abc import Sequence
 
 import httpx
 import streamlit as st
@@ -32,8 +33,12 @@ class ApiClient:
     the same field names and values the API sent.
     """
 
-    def __init__(self, base_url: str, *, transport: httpx.BaseTransport | None = None) -> None:
-        self._client = httpx.Client(base_url=base_url, timeout=_TIMEOUT, transport=transport)
+    def __init__(
+        self, base_url: str, *, transport: httpx.BaseTransport | None = None
+    ) -> None:
+        self._client = httpx.Client(
+            base_url=base_url, timeout=_TIMEOUT, transport=transport
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -63,9 +68,16 @@ class ApiClient:
         """Ask a question (R-04) and return the grounded answer or refusal (R-05)."""
         return self._request("POST", "/query", json={"query": query}).json()
 
-    def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        files: Sequence[tuple[str, tuple[str, bytes]]] | None = None,
+        json: object | None = None,
+    ) -> httpx.Response:
         try:
-            response = self._client.request(method, path, **kwargs)
+            response = self._client.request(method, path, files=files, json=json)
         except httpx.RequestError as error:
             raise ApiError(
                 "Could not reach the Private Knowledge Assistant API. "
@@ -235,7 +247,9 @@ def _render_document_row(client: ApiClient, doc: dict) -> None:
             unsafe_allow_html=True,
         )
     with right:
-        if st.button("🗑", key=f"delete-{doc['document_id']}", help=f"Delete {doc['filename']}"):
+        if st.button(
+            "🗑", key=f"delete-{doc['document_id']}", help=f"Delete {doc['filename']}"
+        ):
             try:
                 client.delete_document(doc["document_id"])
             except ApiError as error:
@@ -251,7 +265,9 @@ def _render_reset_control(client: ApiClient) -> None:
             st.rerun()
         return
 
-    st.warning("This permanently deletes every indexed document. This cannot be undone.")
+    st.warning(
+        "This permanently deletes every indexed document. This cannot be undone."
+    )
     cancel_col, confirm_col = st.columns(2)
     with cancel_col:
         if st.button("Cancel", use_container_width=True):
@@ -270,7 +286,9 @@ def _render_reset_control(client: ApiClient) -> None:
 
 
 def _render_sidebar(client: ApiClient) -> None:
-    st.markdown('<div class="pka-sidebar-title">Upload documents</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="pka-sidebar-title">Upload documents</div>', unsafe_allow_html=True
+    )
     uploader_key = f"uploader_{st.session_state.get('uploader_generation', 0)}"
     uploaded = st.file_uploader(
         "Upload documents",
@@ -279,7 +297,9 @@ def _render_sidebar(client: ApiClient) -> None:
         label_visibility="collapsed",
         key=uploader_key,
     )
-    if st.button("Upload", type="primary", use_container_width=True, disabled=not uploaded):
+    if st.button(
+        "Upload", type="primary", use_container_width=True, disabled=not uploaded
+    ):
         with st.spinner("Indexing..."):
             files = [(f.name, f.getvalue()) for f in uploaded]
             try:
@@ -290,7 +310,9 @@ def _render_sidebar(client: ApiClient) -> None:
             else:
                 st.session_state["ingestion_results"] = results
                 st.session_state["ingestion_error"] = None
-        st.session_state["uploader_generation"] = st.session_state.get("uploader_generation", 0) + 1
+        st.session_state["uploader_generation"] = (
+            st.session_state.get("uploader_generation", 0) + 1
+        )
         st.rerun()
 
     if st.session_state.get("ingestion_error"):
@@ -300,7 +322,9 @@ def _render_sidebar(client: ApiClient) -> None:
 
     st.divider()
 
-    st.markdown('<div class="pka-sidebar-title">Indexed documents</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="pka-sidebar-title">Indexed documents</div>', unsafe_allow_html=True
+    )
     try:
         documents = client.list_documents()
     except ApiError as error:
@@ -308,7 +332,10 @@ def _render_sidebar(client: ApiClient) -> None:
         documents = []
 
     if not documents:
-        st.markdown('<div class="pka-empty">No documents indexed yet.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="pka-empty">No documents indexed yet.</div>',
+            unsafe_allow_html=True,
+        )
     else:
         for doc in documents:
             _render_document_row(client, doc)
@@ -338,7 +365,9 @@ def _render_answer(answer: dict) -> None:
         return
 
     body = html.escape(answer["answer"]).replace("\n", "<br>")
-    st.markdown(f'<div class="pka-answer" dir="auto">{body}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="pka-answer" dir="auto">{body}</div>', unsafe_allow_html=True
+    )
 
     sources = answer.get("sources") or []
     if sources:
@@ -348,8 +377,13 @@ def _render_answer(answer: dict) -> None:
 
 
 def _render_query_panel(client: ApiClient) -> None:
-    st.markdown('<div class="pka-eyebrow">Private Knowledge Assistant</div>', unsafe_allow_html=True)
-    st.markdown('<div class="pka-title">Ask your documents</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="pka-eyebrow">Private Knowledge Assistant</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="pka-title">Ask your documents</div>', unsafe_allow_html=True
+    )
     st.markdown(
         '<div class="pka-subtitle">Answers are grounded only in what you\'ve indexed — '
         "in English, Persian, or both.</div>",
@@ -389,7 +423,9 @@ def _render_query_panel(client: ApiClient) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Private Knowledge Assistant", page_icon="📚", layout="wide")
+    st.set_page_config(
+        page_title="Private Knowledge Assistant", page_icon="📚", layout="wide"
+    )
     _inject_styles()
 
     client = _get_client()

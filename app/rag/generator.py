@@ -87,20 +87,26 @@ def generate(*, query: str, chunks: list[ContextChunk], llm: LLM) -> GeneratedAn
     one call site, rather than being duplicated by every caller.
     """
     if not chunks:
-        return GeneratedAnswer(answer=_refusal_message(query), sources=[], is_refusal=True)
+        return GeneratedAnswer(
+            answer=_refusal_message(query), sources=[], is_refusal=True
+        )
 
     from llama_index.core.llms import ChatMessage, MessageRole
 
     response = llm.chat(
         [
             ChatMessage(role=MessageRole.SYSTEM, content=_SYSTEM_PROMPT),
-            ChatMessage(role=MessageRole.USER, content=_build_user_prompt(query, chunks)),
+            ChatMessage(
+                role=MessageRole.USER, content=_build_user_prompt(query, chunks)
+            ),
         ]
     )
     answer = (response.message.content or "").strip()
 
     if _REFUSAL_TOKEN in answer:
-        return GeneratedAnswer(answer=_refusal_message(query), sources=[], is_refusal=True)
+        return GeneratedAnswer(
+            answer=_refusal_message(query), sources=[], is_refusal=True
+        )
 
     return GeneratedAnswer(
         answer=answer,

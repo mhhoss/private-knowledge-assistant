@@ -34,7 +34,9 @@ class TestIngestOutcome:
 
     def test_failed_outcome_requires_an_error_message(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
-            schemas.IngestOutcome(filename="broken.pdf", status=schemas.IngestStatus.FAILED)
+            schemas.IngestOutcome(
+                filename="broken.pdf", status=schemas.IngestStatus.FAILED
+            )
         assert "error is required" in " ".join(errors_of(exc_info))
 
     def test_failed_outcome_may_have_no_document_id(self) -> None:
@@ -67,12 +69,16 @@ class TestIngestOutcome:
     def test_chunk_count_cannot_be_negative(self) -> None:
         with pytest.raises(ValidationError):
             schemas.IngestOutcome(
-                filename="report.pdf", status=schemas.IngestStatus.INDEXED, chunk_count=-1
+                filename="report.pdf",
+                status=schemas.IngestStatus.INDEXED,
+                chunk_count=-1,
             )
 
     def test_blank_filename_is_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            schemas.IngestOutcome(filename="", status=schemas.IngestStatus.FAILED, error="x")
+            schemas.IngestOutcome(
+                filename="", status=schemas.IngestStatus.FAILED, error="x"
+            )
 
     def test_persian_filename_round_trips(self) -> None:
         outcome = schemas.IngestOutcome(
@@ -99,7 +105,9 @@ class TestIngestionResponse:
                     filename="a.pdf", status=schemas.IngestStatus.INDEXED, chunk_count=1
                 ),
                 schemas.IngestOutcome(
-                    filename="b.txt", status=schemas.IngestStatus.FAILED, error="bad type"
+                    filename="b.txt",
+                    status=schemas.IngestStatus.FAILED,
+                    error="bad type",
                 ),
             ]
         )
@@ -143,14 +151,23 @@ class TestDocumentListResponse:
         response = schemas.DocumentListResponse(
             documents=[
                 schemas.DocumentSummary(
-                    document_id="en1", filename="report.pdf", file_type="pdf", chunk_count=2
+                    document_id="en1",
+                    filename="report.pdf",
+                    file_type="pdf",
+                    chunk_count=2,
                 ),
                 schemas.DocumentSummary(
-                    document_id="fa1", filename="گزارش.pdf", file_type="pdf", chunk_count=1
+                    document_id="fa1",
+                    filename="گزارش.pdf",
+                    file_type="pdf",
+                    chunk_count=1,
                 ),
             ]
         )
-        assert {doc.filename for doc in response.documents} == {"report.pdf", "گزارش.pdf"}
+        assert {doc.filename for doc in response.documents} == {
+            "report.pdf",
+            "گزارش.pdf",
+        }
 
 
 class TestDeleteDocumentResponse:
@@ -206,7 +223,9 @@ class TestCitation:
             excerpt="هزینه دوازده درصد افزایش یافت.",
         )
 
-    @pytest.mark.parametrize("field", ["document_id", "filename", "file_type", "chunk_id"])
+    @pytest.mark.parametrize(
+        "field", ["document_id", "filename", "file_type", "chunk_id"]
+    )
     def test_blank_identity_fields_are_rejected(self, field: str) -> None:
         values = {
             "document_id": "d",
@@ -222,18 +241,28 @@ class TestCitation:
     def test_excerpt_may_be_any_length_including_empty(self) -> None:
         """Excerpt fidelity, not shape, is the requirement — no length constraint."""
         schemas.Citation(
-            document_id="d", filename="f.pdf", file_type="pdf", chunk_id="0000", excerpt=""
+            document_id="d",
+            filename="f.pdf",
+            file_type="pdf",
+            chunk_id="0000",
+            excerpt="",
         )
 
 
 class TestAnswerResponse:
     def _citation(self) -> schemas.Citation:
         return schemas.Citation(
-            document_id="d", filename="f.pdf", file_type="pdf", chunk_id="0000", excerpt="x"
+            document_id="d",
+            filename="f.pdf",
+            file_type="pdf",
+            chunk_id="0000",
+            excerpt="x",
         )
 
     def test_grounded_answer_with_sources_is_valid(self) -> None:
-        schemas.AnswerResponse(answer="12%.", sources=[self._citation()], is_refusal=False)
+        schemas.AnswerResponse(
+            answer="12%.", sources=[self._citation()], is_refusal=False
+        )
 
     def test_refusal_with_no_sources_is_valid(self) -> None:
         schemas.AnswerResponse(
@@ -256,7 +285,11 @@ class TestAnswerResponse:
 
     def test_multiple_sources_across_documents_are_valid(self) -> None:
         other = schemas.Citation(
-            document_id="d2", filename="g.pdf", file_type="pdf", chunk_id="0000", excerpt="y"
+            document_id="d2",
+            filename="g.pdf",
+            file_type="pdf",
+            chunk_id="0000",
+            excerpt="y",
         )
         schemas.AnswerResponse(
             answer="combined", sources=[self._citation(), other], is_refusal=False
@@ -271,7 +304,9 @@ class TestAnswerResponse:
             excerpt="هزینه دوازده درصد افزایش یافت.",
         )
         response = schemas.AnswerResponse(
-            answer="هزینه دوازده درصد افزایش یافت.", sources=[citation], is_refusal=False
+            answer="هزینه دوازده درصد افزایش یافت.",
+            sources=[citation],
+            is_refusal=False,
         )
         dumped = response.model_dump()
         assert dumped["sources"][0]["filename"] == "گزارش.pdf"

@@ -33,23 +33,17 @@ class TestNormalization:
         assert normalize_text(ZWNJ_WORD) == ZWNJ_WORD
 
     def test_removes_other_invisible_characters(self) -> None:
-        noisy = f"a​b‍c‪d﻿e"
+        noisy = "a\u200bb\u200dc\u202ad\ufeffe"
         assert normalize_text(noisy) == "abcde"
 
     def test_strips_tashkeel_and_tatweel(self) -> None:
         # "مُحَمَّد" with harakat, and a tatweel-padded form of "سلام".
-        assert normalize_text("مُحَمَّد") == (
-            "محمد"
-        )
-        assert normalize_text("ســلام") == (
-            "سلام"
-        )
+        assert normalize_text("مُحَمَّد") == ("محمد")
+        assert normalize_text("ســلام") == ("سلام")
 
     def test_folds_arabic_presentation_forms(self) -> None:
         # Persian PDFs frequently extract as presentation forms.
-        assert normalize_text("ﺱﺎﻟﻡ") == (
-            "سالم"
-        )
+        assert normalize_text("ﺱﺎﻟﻡ") == ("سالم")
 
     def test_converts_arabic_indic_digits_but_keeps_ascii(self) -> None:
         assert normalize_text("١٢٣") == "۱۲۳"
@@ -66,9 +60,7 @@ class TestNormalization:
 
     def test_normalizes_mixed_language_text_in_one_pass(self) -> None:
         mixed = f"Kubernetes در {ARABIC_YEH}ک cluster"
-        assert normalize_text(mixed) == (
-            f"Kubernetes در {FARSI_YEH}ک cluster"
-        )
+        assert normalize_text(mixed) == (f"Kubernetes در {FARSI_YEH}ک cluster")
 
     def test_query_and_document_normalization_agree(self) -> None:
         """Invariant 7: an Arabic-typed query must match Persian-typed content."""
@@ -172,7 +164,7 @@ class TestProcessDocument:
             document_id="d",
             filename="mixed.pdf",
             file_type="pdf",
-            raw_text=f"report {ARABIC_YEH}{ARABIC_KAF}​",
+            raw_text=f"report {ARABIC_YEH}{ARABIC_KAF}\u200b",
             chunk_size=200,
             chunk_overlap=0,
         )
@@ -184,7 +176,7 @@ class TestProcessDocument:
                 document_id="d",
                 filename="scan.pdf",
                 file_type="pdf",
-                raw_text="  \n\n ​ ",
+                raw_text="  \n\n \u200b ",
                 chunk_size=200,
                 chunk_overlap=0,
             )

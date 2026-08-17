@@ -21,6 +21,7 @@ import io
 
 import docx
 import pypdf
+from docx.table import Table
 
 
 class ParsingError(RuntimeError):
@@ -44,10 +45,8 @@ def extract_text(*, file_type: str, content: bytes) -> str:
 def _extract_pdf(content: bytes) -> str:
     try:
         reader = pypdf.PdfReader(io.BytesIO(content))
-        pages = [
-            page.extract_text(extraction_mode="layout") for page in reader.pages
-        ]
-    except Exception as error:  # noqa: BLE001 - any library failure is a parsing error
+        pages = [page.extract_text(extraction_mode="layout") for page in reader.pages]
+    except Exception as error:
         raise ParsingError(f"Could not read PDF: {error}") from error
     return _BLOCK_SEP.join(page.strip() for page in pages if page.strip())
 
@@ -57,12 +56,12 @@ def _extract_docx(content: bytes) -> str:
         document = docx.Document(io.BytesIO(content))
         paragraphs = [p.text for p in document.paragraphs if p.text.strip()]
         tables = [_render_table(table) for table in document.tables]
-    except Exception as error:  # noqa: BLE001 - any library failure is a parsing error
+    except Exception as error:
         raise ParsingError(f"Could not read DOCX: {error}") from error
     return _BLOCK_SEP.join(block for block in (*paragraphs, *tables) if block)
 
 
-def _render_table(table: docx.table.Table) -> str:
+def _render_table(table: Table) -> str:
     """Render a table as one row per line, cells tab-separated."""
     rows = ("\t".join(cell.text for cell in row.cells) for row in table.rows)
     return "\n".join(row for row in rows if row.strip())

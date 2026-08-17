@@ -37,7 +37,11 @@ class TestGroundedAnswers:
         self, llm: StubLLM
     ) -> None:
         llm.response = "Kubernetes spending rose 12%."
-        result = generate(query="How much did Kubernetes spending rise?", chunks=[ENGLISH_CHUNK], llm=llm)
+        result = generate(
+            query="How much did Kubernetes spending rise?",
+            chunks=[ENGLISH_CHUNK],
+            llm=llm,
+        )
 
         assert isinstance(result, GeneratedAnswer)
         assert result.is_refusal is False
@@ -56,7 +60,9 @@ class TestGroundedAnswers:
         self, llm: StubLLM
     ) -> None:
         llm.response = "هزینه کوبرنتیز دوازده درصد افزایش یافت."
-        result = generate(query="هزینه کوبرنتیز چقدر افزایش یافت؟", chunks=[PERSIAN_CHUNK], llm=llm)
+        result = generate(
+            query="هزینه کوبرنتیز چقدر افزایش یافت؟", chunks=[PERSIAN_CHUNK], llm=llm
+        )
 
         assert result.is_refusal is False
         assert result.answer == "هزینه کوبرنتیز دوازده درصد افزایش یافت."
@@ -85,7 +91,9 @@ class TestGroundedAnswers:
 
 
 class TestDeterministicRefusal:
-    def test_empty_context_is_refused_without_calling_the_llm(self, llm: StubLLM) -> None:
+    def test_empty_context_is_refused_without_calling_the_llm(
+        self, llm: StubLLM
+    ) -> None:
         llm.response = "this must never be seen"
         result = generate(query="Anything?", chunks=[], llm=llm)
 
@@ -134,10 +142,14 @@ class TestModelSignaledRefusal:
         self, llm: StubLLM
     ) -> None:
         llm.response = "[[INSUFFICIENT_CONTEXT]]"
-        result = generate(query="این موضوع نامرتبط چیست؟", chunks=[PERSIAN_CHUNK], llm=llm)
+        result = generate(
+            query="این موضوع نامرتبط چیست؟", chunks=[PERSIAN_CHUNK], llm=llm
+        )
         assert "اطلاعات کافی" in result.answer
 
-    def test_refusal_token_anywhere_in_response_still_counts(self, llm: StubLLM) -> None:
+    def test_refusal_token_anywhere_in_response_still_counts(
+        self, llm: StubLLM
+    ) -> None:
         """A model that wraps the token in extra text is still treated as a refusal —
         never as a partial, unsupported answer (groundedness rule 5)."""
         llm.response = "Well, [[INSUFFICIENT_CONTEXT]] unfortunately."
@@ -153,6 +165,7 @@ class TestPromptGrounding:
 
         (messages,) = llm.received_messages
         user_message = next(m for m in messages if m.role == "user")
+        assert isinstance(user_message.content, str)
         assert ENGLISH_CHUNK.text in user_message.content
         assert "What increased?" in user_message.content
 
@@ -162,6 +175,7 @@ class TestPromptGrounding:
 
         (messages,) = llm.received_messages
         system_message = next(m for m in messages if m.role == "system")
+        assert isinstance(system_message.content, str)
         assert "ONLY" in system_message.content
         assert "outside" in system_message.content.lower()
 
@@ -171,6 +185,7 @@ class TestPromptGrounding:
 
         (messages,) = llm.received_messages
         system_message = next(m for m in messages if m.role == "system")
+        assert isinstance(system_message.content, str)
         assert "same language" in system_message.content
 
     def test_persian_context_is_passed_through_untranslated(self, llm: StubLLM) -> None:
@@ -179,6 +194,7 @@ class TestPromptGrounding:
 
         (messages,) = llm.received_messages
         user_message = next(m for m in messages if m.role == "user")
+        assert isinstance(user_message.content, str)
         assert PERSIAN_CHUNK.text in user_message.content
 
 

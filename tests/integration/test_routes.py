@@ -8,6 +8,7 @@ or `chroma_db/`. `app/main.py` does not exist yet, so each test builds its own m
 
 from __future__ import annotations
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -54,7 +55,7 @@ def client(app: FastAPI) -> TestClient:
     return TestClient(app)
 
 
-def upload(client: TestClient, files: list[tuple[str, bytes]]) -> object:
+def upload(client: TestClient, files: list[tuple[str, bytes]]) -> httpx.Response:
     return client.post(
         "/documents",
         files=[("files", (name, content)) for name, content in files],
@@ -75,7 +76,9 @@ class TestIngestDocuments:
         assert result["error"] is None
         assert result["document_id"]
 
-    def test_multi_file_ingestion_with_partial_failure(self, client: TestClient) -> None:
+    def test_multi_file_ingestion_with_partial_failure(
+        self, client: TestClient
+    ) -> None:
         response = upload(
             client,
             [
@@ -147,9 +150,9 @@ class TestListDocuments:
 
 class TestDeleteDocument:
     def test_deletes_an_existing_document(self, client: TestClient) -> None:
-        ingested = upload(
-            client, [("report.pdf", build_pdf([ENGLISH_TEXT]))]
-        ).json()["results"][0]
+        ingested = upload(client, [("report.pdf", build_pdf([ENGLISH_TEXT]))]).json()[
+            "results"
+        ][0]
         document_id = ingested["document_id"]
 
         response = client.delete(f"/documents/{document_id}")
@@ -235,7 +238,9 @@ class TestQuery:
         upload(client, [("گزارش.pdf", build_pdf([PERSIAN_TEXT]))])
         llm.response = "هزینه دوازده درصد افزایش یافت."
 
-        response = client.post("/query", json={"query": "هزینه خوشه کوبرنتیز چقدر تغییر کرد؟"})
+        response = client.post(
+            "/query", json={"query": "هزینه خوشه کوبرنتیز چقدر تغییر کرد؟"}
+        )
 
         assert response.status_code == 200
         body = response.json()
@@ -244,7 +249,9 @@ class TestQuery:
 
 
 class TestResponseSchemas:
-    def test_ingestion_response_matches_schema_exactly(self, client: TestClient) -> None:
+    def test_ingestion_response_matches_schema_exactly(
+        self, client: TestClient
+    ) -> None:
         response = upload(client, [("a.pdf", build_pdf(["Some text."]))])
         result = response.json()["results"][0]
         assert set(result.keys()) == {
@@ -261,7 +268,12 @@ class TestResponseSchemas:
         upload(client, [("a.pdf", build_pdf(["Some text."]))])
         response = client.get("/documents")
         doc = response.json()["documents"][0]
-        assert set(doc.keys()) == {"document_id", "filename", "file_type", "chunk_count"}
+        assert set(doc.keys()) == {
+            "document_id",
+            "filename",
+            "file_type",
+            "chunk_count",
+        }
 
     def test_answer_response_matches_schema_exactly(
         self, client: TestClient, llm: StubLLM

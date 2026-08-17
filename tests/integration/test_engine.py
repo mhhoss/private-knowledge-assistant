@@ -24,7 +24,9 @@ MIXED_TEXT = "تیم زیرساخت از Kubernetes و PostgreSQL استفاده
 UNRELATED_TEXT = "The cafeteria menu changed to include more vegetarian options."
 
 
-def do_ingest(store: VectorStore, embed_model: StubEmbedding, filename: str, content: bytes):
+def do_ingest(
+    store: VectorStore, embed_model: StubEmbedding, filename: str, content: bytes
+):
     return ingest_file(
         store=store,
         embed_model=embed_model,
@@ -273,9 +275,15 @@ class TestAnswerQuery:
     def test_top_k_and_min_score_are_forwarded_to_retrieval(
         self, store: VectorStore, embed_model: StubEmbedding, llm: StubLLM
     ) -> None:
-        do_ingest(store, embed_model, "a.pdf", build_pdf(["Alpha document about servers."]))
-        do_ingest(store, embed_model, "b.pdf", build_pdf(["Beta document about servers."]))
-        do_ingest(store, embed_model, "c.pdf", build_pdf(["Gamma document about servers."]))
+        do_ingest(
+            store, embed_model, "a.pdf", build_pdf(["Alpha document about servers."])
+        )
+        do_ingest(
+            store, embed_model, "b.pdf", build_pdf(["Beta document about servers."])
+        )
+        do_ingest(
+            store, embed_model, "c.pdf", build_pdf(["Gamma document about servers."])
+        )
         llm.response = "answer"
 
         result = answer_query(
@@ -294,9 +302,7 @@ class TestEndToEndIngestThenQuery:
     def test_a_freshly_ingested_document_is_immediately_queryable(
         self, store: VectorStore, embed_model: StubEmbedding, llm: StubLLM
     ) -> None:
-        outcome = do_ingest(
-            store, embed_model, "گزارش.pdf", build_pdf([PERSIAN_TEXT])
-        )
+        outcome = do_ingest(store, embed_model, "گزارش.pdf", build_pdf([PERSIAN_TEXT]))
         assert outcome.status is IngestStatus.INDEXED
         llm.response = "پاسخ نهایی."
 
@@ -341,5 +347,7 @@ class TestUnsupportedFileTypeIsHandledNotRaised:
         try:
             outcome = do_ingest(store, embed_model, "x.bmp", b"whatever")
         except UnsupportedFileTypeError:
-            raise AssertionError("engine.ingest_file must not let this escape") from None
+            raise AssertionError(
+                "engine.ingest_file must not let this escape"
+            ) from None
         assert outcome.status is IngestStatus.FAILED

@@ -111,12 +111,16 @@ class TestIndexing:
         index_document(store=store, embed_model=embed_model, chunks=chunks)
 
         stored = store._collection.get(include=["documents"])
-        assert set(stored["documents"]) == {chunk.text for chunk in chunks}
+        documents = stored["documents"]
+        assert documents is not None
+        assert set(documents) == {chunk.text for chunk in chunks}
 
 
 class TestFailureIsolation:
     @staticmethod
-    def _partially_write_then_fail(monkeypatch: pytest.MonkeyPatch, bad_id: str) -> None:
+    def _partially_write_then_fail(
+        monkeypatch: pytest.MonkeyPatch, bad_id: str
+    ) -> None:
         """Make one document write its first chunk and then fail, as a provider might."""
         real_write = indexer._write
 

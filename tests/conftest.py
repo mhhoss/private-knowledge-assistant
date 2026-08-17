@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import zlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,14 @@ from app.storage.vector_store import VectorStore
 STUB_FINGERPRINT = "stub-embedding-v1"
 _DIM = 32
 
-_SETTINGS_ENV_PREFIXES = ("LLM_", "EMBEDDING_", "CHROMA_", "CHUNK_", "RETRIEVAL_", "API_")
+_SETTINGS_ENV_PREFIXES = (
+    "LLM_",
+    "EMBEDDING_",
+    "CHROMA_",
+    "CHUNK_",
+    "RETRIEVAL_",
+    "API_",
+)
 
 
 class StubEmbedding(BaseEmbedding):
@@ -73,9 +80,11 @@ class StubLLM(CustomLLM):
 
     @property
     def metadata(self) -> LLMMetadata:
-        return LLMMetadata(context_window=self.context_window, num_output=self.num_output)
+        return LLMMetadata(
+            context_window=self.context_window, num_output=self.num_output
+        )
 
-    def chat(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResponse:
+    def chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponse:
         self.call_count += 1
         self.received_messages.append(list(messages))
         return ChatResponse(

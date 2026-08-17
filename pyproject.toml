@@ -13,6 +13,7 @@ dependencies = [
     "llama-index-vector-stores-chroma>=0.5.5",
     "pydantic-settings>=2.15.0",
     "pypdf>=6.16.1",
+    "pyright>=1.1.411",
     "python-docx>=1.2.0",
     "python-dotenv>=1.2.3",
     "streamlit>=1.61.1",
@@ -22,11 +23,25 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",
+    "ruff>=0.16.3",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff.lint]
+# EXE002: every file on this checkout's filesystem reports as executable regardless of
+# its git-tracked mode (confirmed: `chmod -x` is a no-op here), so the rule can't
+# distinguish a real problem from the mount artifact. Git records the correct 100644
+# mode for all of these files.
+ignore = ["EXE002"]
+
+[tool.ruff.lint.per-file-ignores]
+# B008: FastAPI's dependency-injection pattern requires `Depends(...)`/`File(...)` as
+# literal argument defaults — it inspects the defaults to build the dependency graph,
+# so moving the calls into the function body would break injection, not just style.
+"app/api/routes.py" = ["B008"]
 
 [build-system]
 requires = ["hatchling"]

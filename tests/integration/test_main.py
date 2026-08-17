@@ -35,7 +35,10 @@ def _settings(chroma_path: Path, **overrides: object) -> Settings:
         "chunk_overlap": 30,
     }
     kwargs.update(overrides)
-    return Settings(_env_file=None, **kwargs)
+    # pydantic-settings' `_env_file` init-only control param is defined in a manual
+    # `BaseSettings.__init__` override that pyright's pydantic plugin doesn't see — it
+    # synthesizes `__init__` from model fields only.
+    return Settings(_env_file=None, **kwargs)  # type: ignore[call-arg]
 
 
 @pytest.fixture
@@ -50,7 +53,9 @@ def stub_providers(monkeypatch: pytest.MonkeyPatch):
 
     stub_embed_model = StubEmbedding()
     stub_llm = StubLLM()
-    monkeypatch.setattr(main_module, "build_embedding_model", lambda settings: stub_embed_model)
+    monkeypatch.setattr(
+        main_module, "build_embedding_model", lambda settings: stub_embed_model
+    )
     monkeypatch.setattr(main_module, "build_llm", lambda settings: stub_llm)
     return stub_embed_model, stub_llm
 
@@ -85,7 +90,7 @@ class TestStartupBehavior:
     def test_lifespan_populates_shared_state(self, tmp_path: Path) -> None:
         app = create_app(settings=_settings(tmp_path / "chroma"))
 
-        with TestClient(app) as client:
+        with TestClient(app):
             assert isinstance(app.state.store, VectorStore)
             assert app.state.settings.chroma_collection == "test_kb"
             assert app.state.embed_model is not None
@@ -157,9 +162,11 @@ class TestProviderInitializationFailure:
         monkeypatch.setattr(main_module, "build_llm", _boom)
         app = create_app(settings=_settings(tmp_path / "chroma"))
 
-        with pytest.raises(RuntimeError, match="provider misconfigured"):
-            with TestClient(app):
-                pass
+        with (
+            pytest.raises(RuntimeError, match="provider misconfigured"),
+            TestClient(app),
+        ):
+            pass
 
     def test_embedding_model_construction_failure_fails_startup(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -172,9 +179,8 @@ class TestProviderInitializationFailure:
         monkeypatch.setattr(main_module, "build_embedding_model", _boom)
         app = create_app(settings=_settings(tmp_path / "chroma"))
 
-        with pytest.raises(RuntimeError, match="bad embedding config"):
-            with TestClient(app):
-                pass
+        with pytest.raises(RuntimeError, match="bad embedding config"), TestClient(app):
+            pass
 
 
 class TestEmbeddingMismatchAtStartup:
@@ -192,16 +198,17 @@ class TestEmbeddingMismatchAtStartup:
         old_store._collection.add(
             ids=["chunk-1"],
             embeddings=[[0.1] * 8],
-            metadatas=[{"document_id": "doc-1", "filename": "a.pdf", "file_type": "pdf"}],
+            metadatas=[
+                {"document_id": "doc-1", "filename": "a.pdf", "file_type": "pdf"}
+            ],
         )
 
         app = create_app(
             settings=_settings(chroma_path, embedding_model=EMBEDDING_MODEL_A)
         )
 
-        with pytest.raises(EmbeddingMismatchError):
-            with TestClient(app):
-                pass
+        with pytest.raises(EmbeddingMismatchError), TestClient(app):
+            pass
 
     def test_an_empty_collection_adopts_the_new_fingerprint_and_starts_cleanly(
         self, tmp_path: Path
@@ -213,7 +220,9 @@ class TestEmbeddingMismatchAtStartup:
             embedding_fingerprint=EMBEDDING_MODEL_B,
         )
 
-        app = create_app(settings=_settings(chroma_path, embedding_model=EMBEDDING_MODEL_A))
+        app = create_app(
+            settings=_settings(chroma_path, embedding_model=EMBEDDING_MODEL_A)
+        )
 
         with TestClient(app) as client:
             response = client.get("/documents")

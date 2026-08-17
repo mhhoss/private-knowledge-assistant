@@ -56,7 +56,7 @@ class TestEndToEndIngestion:
 
     def test_persian_pdf(self, store: VectorStore, embed_model: StubEmbedding) -> None:
         content = build_pdf([PERSIAN_REPORT])
-        document, chunks = load_and_process(filename="گزارش.pdf", content=content)
+        _document, chunks = load_and_process(filename="گزارش.pdf", content=content)
         assert chunks, "Persian text must survive extraction + normalization"
 
         outcome = index_document(store=store, embed_model=embed_model, chunks=chunks)
@@ -69,7 +69,7 @@ class TestEndToEndIngestion:
         self, store: VectorStore, embed_model: StubEmbedding
     ) -> None:
         content = build_docx([MIXED_REPORT])
-        document, chunks = load_and_process(filename="mixed.docx", content=content)
+        _document, chunks = load_and_process(filename="mixed.docx", content=content)
 
         outcome = index_document(store=store, embed_model=embed_model, chunks=chunks)
 
@@ -96,7 +96,9 @@ class TestEndToEndIngestion:
         _, first_chunks = load_and_process(filename="original.pdf", content=content)
         index_document(store=store, embed_model=embed_model, chunks=first_chunks)
 
-        _, second_chunks = load_and_process(filename="renamed_copy.pdf", content=content)
+        _, second_chunks = load_and_process(
+            filename="renamed_copy.pdf", content=content
+        )
         outcome = index_document(
             store=store, embed_model=embed_model, chunks=second_chunks
         )
@@ -126,12 +128,16 @@ class TestNoExtractableText:
     """A document with no text is a caller-visible signal, not a silent empty index."""
 
     def test_blank_docx_yields_no_chunks(self) -> None:
-        document, chunks = load_and_process(filename="blank.docx", content=build_docx([]))
+        document, chunks = load_and_process(
+            filename="blank.docx", content=build_docx([])
+        )
         assert document.raw_text == ""
         assert chunks == []
 
     def test_whitespace_only_pdf_yields_no_chunks(self) -> None:
-        document, chunks = load_and_process(filename="scan.pdf", content=build_pdf(["   "]))
+        _document, chunks = load_and_process(
+            filename="scan.pdf", content=build_pdf(["   "])
+        )
         assert chunks == []
 
 

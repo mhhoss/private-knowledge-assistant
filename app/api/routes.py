@@ -134,7 +134,9 @@ def list_documents(
     )
 
 
-@router.delete("/documents/{document_id}", response_model=schemas.DeleteDocumentResponse)
+@router.delete(
+    "/documents/{document_id}", response_model=schemas.DeleteDocumentResponse
+)
 def delete_document(
     document_id: str,
     store: VectorStore = Depends(_get_vector_store),

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 from llama_index.core.base.embeddings.base import BaseEmbedding
-from llama_index.core.llms import LLM
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms.openai import OpenAI
 from pydantic import ValidationError
 
 from app.config import Settings, build_embedding_model, build_llm
@@ -137,6 +138,7 @@ class TestBuildEmbeddingModel:
         )
         embed_model = build_embedding_model(settings)
 
+        assert isinstance(embed_model, OpenAIEmbedding)
         assert embed_model.api_key == "llm-key"
         assert embed_model.api_base == "http://localhost:9999/v1"
 
@@ -152,7 +154,7 @@ class TestBuildLlm:
         )
         llm = build_llm(settings)
 
-        assert isinstance(llm, LLM)
+        assert isinstance(llm, OpenAI)
         assert llm.model == "gpt-4o-mini"
 
     def test_accepts_an_arbitrary_non_catalog_model_name(self) -> None:
@@ -167,6 +169,7 @@ class TestBuildLlm:
         )
         llm = build_llm(settings)
 
+        assert isinstance(llm, OpenAI)
         assert llm.model == "qwen/qwen-2.5-72b-instruct"
 
 
@@ -177,7 +180,8 @@ class TestEnvironmentBinding:
         monkeypatch.setenv("LLM_MODEL", "gpt-from-env")
         monkeypatch.setenv("EMBEDDING_MODEL", "embed-from-env")
         monkeypatch.setenv("RETRIEVAL_TOP_K", "9")
-        settings = Settings(_env_file=None)
+        # See the comment on the equivalent call in tests/integration/test_main.py.
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
         assert settings.llm_model == "gpt-from-env"
         assert settings.embedding_model == "embed-from-env"
         assert settings.retrieval_top_k == 9

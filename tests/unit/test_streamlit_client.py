@@ -230,7 +230,11 @@ class TestErrorHandling:
                 422,
                 {
                     "detail": [
-                        {"loc": ["body", "query"], "msg": "query must not be blank", "type": "value_error"}
+                        {
+                            "loc": ["body", "query"],
+                            "msg": "query must not be blank",
+                            "type": "value_error",
+                        }
                     ]
                 },
             )
@@ -256,7 +260,9 @@ class TestErrorHandling:
 
 
 class TestModuleHasNoForbiddenImports:
-    def test_streamlit_app_does_not_import_rag_storage_or_provider_modules(self) -> None:
+    def test_streamlit_app_does_not_import_rag_storage_or_provider_modules(
+        self,
+    ) -> None:
         import ast
         from pathlib import Path
 

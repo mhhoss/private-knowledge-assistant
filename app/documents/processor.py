@@ -16,9 +16,9 @@ from dataclasses import dataclass
 # Written as escapes because the pairs are indistinguishable on screen.
 _CHAR_MAP = str.maketrans(
     {
-        "\u064A": "\u06CC",  # Arabic yeh     -> Farsi yeh
-        "\u0649": "\u06CC",  # alef maksura   -> Farsi yeh
-        "\u0643": "\u06A9",  # Arabic kaf     -> Keheh
+        "\u064a": "\u06cc",  # Arabic yeh     -> Farsi yeh
+        "\u0649": "\u06cc",  # alef maksura   -> Farsi yeh
+        "\u0643": "\u06a9",  # Arabic kaf     -> Keheh
         **{chr(0x0660 + i): chr(0x06F0 + i) for i in range(10)},  # Arabic-Indic digits
     }
 )

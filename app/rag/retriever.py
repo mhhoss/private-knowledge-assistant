@@ -58,7 +58,7 @@ def retrieve(
 
     return [
         RetrievedChunk(
-            text=node.node.text,
+            text=node.node.get_content(),
             score=score,
             document_id=node.node.metadata.get("document_id", ""),
             filename=node.node.metadata.get("filename", ""),

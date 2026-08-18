@@ -265,6 +265,72 @@ processes RTL text; the new one reproduces the real mechanism (bidi-shaped visua
 glyph runs, verified directly against real LibreOffice/Chrome PDFs), not a
 library-specific one.
 
+**ADR-13 — `embed_batch_size` and `timeout` on the embedding client are configurable
+(`EMBEDDING_BATCH_SIZE`, `EMBEDDING_TIMEOUT_SECONDS`), defaulting to values safe for a
+slow backend.** A scale evaluation (2026-08-18, see Performance below) reproduced a
+concrete ingestion failure: llama-index's `OpenAIEmbedding` defaults to
+`embed_batch_size=100` and `timeout=60.0`s; against a real CPU-served `BAAI/bge-m3`
+measured at ~2.5-2.8s/chunk, one default-sized batch request takes ~250-280s — 4-5x the
+timeout — so any document producing more than ~20-24 chunks reproducibly failed
+ingestion outright (confirmed directly: a 626-chunk document failed after 709.8s of
+retries). `build_embedding_model` now passes both as constructor kwargs, sourced from
+`Settings` (invariant 5 holds: still the only place these are read); defaults are
+`embedding_batch_size=10`, `embedding_timeout_seconds=120.0`, chosen to keep every
+request comfortably under the timeout at the measured rate while leaving margin for
+slower conditions or a larger `CHUNK_SIZE`. A fast/hosted embedding backend can raise
+`EMBEDDING_BATCH_SIZE` for higher throughput without reintroducing the failure. This is
+a client-construction tuning change, not a retrieval/chunking/Chroma/generation change —
+confined to `config.py` per invariant 5, same as ADR-11.
+
+## Performance
+
+Scale evaluation (2026-08-18) against the current production setup: poppler PDF
+extraction, python-docx, real `BAAI/bge-m3` (local CPU-served Ollama), Chroma, the
+current retrieval/generation pipeline. Full methodology, all measured tables, and the
+sweep results are not reproduced here in detail — the findings below are what changed
+production behavior or configuration; treat this as a summary, not the full record.
+
+- **Chroma read path (retrieval) scales cleanly.** Pure-vector insertion (synthetic
+  1024-dim vectors, isolating Chroma from embedding cost) up to 400,000 vectors showed
+  flat query latency (3.9-7.4ms at k=5) across the entire range — no cliff, no
+  measurable degradation as the collection grows. Insert throughput degraded gradually
+  (1,205/s at 1k -> 262/s at 400k, ~4.6x) — real, but not a nonlinear blowup. Disk usage
+  converges to ~5.0KB/vector from ~5,000 vectors onward.
+- **Embedding throughput is the dominant ingestion cost, by orders of magnitude**, and
+  is a hardware/deployment characteristic, not an architectural one — R-08's
+  OpenAI-compatible interface already supports swapping to a faster (GPU-served or
+  hosted) backend with no code change. Measured on this evaluation's CPU-only setup:
+  ~2.5-2.8s/chunk steady-state for realistic (~750-char) English/Persian/mixed chunks,
+  versus microseconds for parsing/chunking and single-digit milliseconds for Chroma
+  reads/writes at the same scale.
+- **The batch_size/timeout failure above was the one concrete blocker found and is
+  fixed by ADR-13.** No other production code changed as a result of this evaluation.
+- **Retrieval latency is dominated by the single query-embedding call, not corpus
+  size or Chroma**: ~500-520ms steady-state, statistically identical at 10 chunks and
+  at 400,000 vectors.
+- **`RETRIEVAL_MIN_SCORE=0.60` remained correct for ranking at the scales tested**
+  (needle-document scores and top-1 correctness were unaffected by a growing unrelated
+  haystack, up to a few hundred synthetic chunks — real-embedding throughput made
+  testing meaningfully larger scale impractical in-session), **but the count of
+  weakly-related chunks clearing the threshold for off-topic queries grew (1 -> 2 -> 4
+  of the top 5 retrieved) as the haystack grew**, shifting more weight onto the LLM's
+  own prompt-level refusal (ADR-4's second line of defense) rather than the cheap
+  deterministic retrieval-level cutoff. Not yet acted on: the effect was measured only
+  at a few hundred chunks, and no threshold change is justified without measuring it at
+  a realistic target scale.
+- **`CHUNK_SIZE`/`CHUNK_OVERLAP`/`RETRIEVAL_TOP_K` sweep (512/1024/1500 x 3/5/8, real
+  corpus) found no correctness or latency difference** — every combination retrieved
+  the correct document at top-1. Total indexing time was roughly invariant to
+  `CHUNK_SIZE` (fixed total token volume regardless of how it's split); smaller chunks
+  mean more, smaller vector-store entries, not more embedding work. No change to the
+  current defaults is justified by this.
+- **Not yet justified**: any change to Chroma, chunking, or the retrieval/generation
+  architecture. **Speculative, not yet needed**: parallelizing `ingest_files`'
+  currently-sequential per-document loop — only worth considering if a fast embedding
+  backend is in place and ingestion wall-clock time is still the bottleneck afterward;
+  the CPU-bound embedding cost measured here dominates by orders of magnitude over any
+  sequential-loop overhead, so this isn't where the time currently goes.
+
 ## Testing
 
 Unit-test the deterministic parts: parsing, normalization, chunking, metadata

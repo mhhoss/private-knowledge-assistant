@@ -77,6 +77,7 @@ class StubLLM(CustomLLM):
     response: str = ""
     call_count: int = 0
     received_messages: list[list[ChatMessage]] = Field(default_factory=list)
+    error: Exception | None = None
 
     @property
     def metadata(self) -> LLMMetadata:
@@ -87,6 +88,8 @@ class StubLLM(CustomLLM):
     def chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponse:
         self.call_count += 1
         self.received_messages.append(list(messages))
+        if self.error is not None:
+            raise self.error
         return ChatResponse(
             message=ChatMessage(role=MessageRole.ASSISTANT, content=self.response)
         )

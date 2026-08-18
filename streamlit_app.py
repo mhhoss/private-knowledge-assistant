@@ -19,6 +19,10 @@ import streamlit as st
 from app.config import get_settings
 
 _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+# Ingestion of a large document can take minutes at a slow (e.g. local CPU) embedding
+# rate (see ARCHITECTURE.md ADR-13) — a short timeout here would report a false
+# failure in the UI while the API keeps indexing in the background regardless.
+_INGEST_TIMEOUT = httpx.Timeout(600.0, connect=10.0)
 
 
 class ApiError(Exception):
@@ -49,6 +53,7 @@ class ApiClient:
             "POST",
             "/documents",
             files=[("files", (name, content)) for name, content in files],
+            timeout=_INGEST_TIMEOUT,
         )
         return response.json()["results"]
 
@@ -75,9 +80,15 @@ class ApiClient:
         *,
         files: Sequence[tuple[str, tuple[str, bytes]]] | None = None,
         json: object | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> httpx.Response:
         try:
-            response = self._client.request(method, path, files=files, json=json)
+            if timeout is None:
+                response = self._client.request(method, path, files=files, json=json)
+            else:
+                response = self._client.request(
+                    method, path, files=files, json=json, timeout=timeout
+                )
         except httpx.RequestError as error:
             raise ApiError(
                 "Could not reach the Private Knowledge Assistant API. "
@@ -297,10 +308,13 @@ def _render_sidebar(client: ApiClient) -> None:
         label_visibility="collapsed",
         key=uploader_key,
     )
+    st.caption("Large documents can take several minutes to index.")
     if st.button(
         "Upload", type="primary", use_container_width=True, disabled=not uploaded
     ):
-        with st.spinner("Indexing..."):
+        with st.spinner(
+            "Indexing... this can take several minutes for large documents."
+        ):
             files = [(f.name, f.getvalue()) for f in uploaded]
             try:
                 results = client.ingest_files(files)

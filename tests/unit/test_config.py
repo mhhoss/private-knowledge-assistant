@@ -72,6 +72,14 @@ class TestValidation:
         with pytest.raises(ValidationError):
             Settings(**settings_kwargs(retrieval_top_k=0))
 
+    def test_embedding_batch_size_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(**settings_kwargs(embedding_batch_size=0))
+
+    def test_embedding_timeout_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(**settings_kwargs(embedding_timeout_seconds=0.0))
+
 
 class TestBuildEmbeddingModel:
     """Regression coverage for `build_embedding_model`. No network calls: constructing
@@ -141,6 +149,63 @@ class TestBuildEmbeddingModel:
         assert isinstance(embed_model, OpenAIEmbedding)
         assert embed_model.api_key == "llm-key"
         assert embed_model.api_base == "http://localhost:9999/v1"
+
+
+class TestEmbeddingBatchSizeAndTimeout:
+    """Regression coverage for the ADR-13 fix: a real CPU-served `BAAI/bge-m3` embeds
+    realistic chunks at ~2.5-2.8s/chunk (measured in the scale evaluation), at which
+    llama-index's library defaults (`embed_batch_size=100`, `timeout=60.0`) reproducibly
+    fail ingestion outright for any document over ~20-24 chunks — one over-long batch
+    request exceeds the timeout. These tests pin that both settings actually reach the
+    embedding client, and that the *defaults* leave a safety margin at that measured
+    rate, without making any live provider calls.
+    """
+
+    # Measured steady-state cost for realistic (~750-char) chunks against a real
+    # CPU-served BAAI/bge-m3 (see docs/ARCHITECTURE.md's Performance section).
+    _MEASURED_WORST_CASE_SECONDS_PER_CHUNK = 2.8
+
+    def test_configured_batch_size_and_timeout_reach_the_embedding_client(self) -> None:
+        settings = Settings(
+            **settings_kwargs(
+                embedding_model="bge-m3",
+                embedding_api_key="dummy-key",
+                embedding_base_url="http://localhost:11434/v1",
+                embedding_batch_size=7,
+                embedding_timeout_seconds=45.0,
+            )
+        )
+        embed_model = build_embedding_model(settings)
+
+        assert isinstance(embed_model, OpenAIEmbedding)
+        assert embed_model.embed_batch_size == 7
+        assert embed_model.timeout == 45.0
+
+    def test_defaults_are_safe_for_long_documents_at_the_measured_cpu_throughput(
+        self,
+    ) -> None:
+        """The failure this fixes was a single over-long batch request exceeding the
+        client's timeout, not raw throughput (raising the timeout or lowering the
+        batch size are the only two levers). Pin that the *default* combination
+        leaves real margin at the measured worst-case rate, so a regression that
+        quietly raises the default batch size or lowers the default timeout is caught
+        here rather than by re-running the multi-minute live benchmark.
+        """
+        settings = Settings(**settings_kwargs())
+
+        worst_case_request_seconds = (
+            settings.embedding_batch_size * self._MEASURED_WORST_CASE_SECONDS_PER_CHUNK
+        )
+
+        assert worst_case_request_seconds < settings.embedding_timeout_seconds
+        # At least 2x margin, not just barely under the wire.
+        assert worst_case_request_seconds * 2 <= settings.embedding_timeout_seconds
+
+    def test_default_batch_size_and_timeout_values(self) -> None:
+        settings = Settings(**settings_kwargs())
+
+        assert settings.embedding_batch_size == 10
+        assert settings.embedding_timeout_seconds == 120.0
 
 
 class TestBuildLlm:

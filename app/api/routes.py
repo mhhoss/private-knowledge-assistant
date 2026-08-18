@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from openai import APIError
 
 from app.config import Settings
 from app.rag import engine
@@ -157,7 +158,11 @@ def reset_knowledge_base(
     return schemas.ResetResponse()
 
 
-@router.post("/query", response_model=schemas.AnswerResponse)
+@router.post(
+    "/query",
+    response_model=schemas.AnswerResponse,
+    responses={502: {"model": schemas.ErrorResponse}},
+)
 def query(
     request: schemas.QueryRequest,
     settings: Settings = Depends(_get_settings),
@@ -165,13 +170,25 @@ def query(
     embed_model: BaseEmbedding = Depends(_get_embed_model),
     llm: LLM = Depends(_get_llm),
 ) -> schemas.AnswerResponse:
-    """Answer a question from indexed documents only (R-04, R-05), or refuse (ADR-4)."""
-    result = engine.answer_query(
-        store=store,
-        embed_model=embed_model,
-        llm=llm,
-        query=request.query,
-        top_k=settings.retrieval_top_k,
-        min_score=settings.retrieval_min_score,
-    )
+    """Answer a question from indexed documents only (R-04, R-05), or refuse (ADR-4).
+
+    A provider/network failure during embedding or generation surfaces as a 502 with
+    `schemas.ErrorResponse`, not a raw 500 — the request was valid, the configured
+    provider just could not serve it.
+    """
+    try:
+        result = engine.answer_query(
+            store=store,
+            embed_model=embed_model,
+            llm=llm,
+            query=request.query,
+            top_k=settings.retrieval_top_k,
+            min_score=settings.retrieval_min_score,
+        )
+    except APIError as error:
+        raise HTTPException(
+            status_code=502,
+            detail="The configured LLM/embedding provider could not be reached. "
+            "Please try again.",
+        ) from error
     return _to_schema_answer(result)

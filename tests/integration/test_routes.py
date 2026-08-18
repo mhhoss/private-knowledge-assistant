@@ -12,6 +12,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from openai import APIConnectionError
 
 from app.api import routes
 from app.config import Settings
@@ -231,6 +232,21 @@ class TestQuery:
         response = client.post("/query", json={})
 
         assert response.status_code == 422
+
+    def test_provider_failure_returns_502_error_response(
+        self, client: TestClient, llm: StubLLM
+    ) -> None:
+        upload(client, [("report.pdf", build_pdf([ENGLISH_TEXT]))])
+        llm.error = APIConnectionError(
+            request=httpx.Request("POST", "https://example.invalid")
+        )
+
+        response = client.post(
+            "/query", json={"query": "How did Kubernetes cluster costs change?"}
+        )
+
+        assert response.status_code == 502
+        assert response.json()["detail"]
 
     def test_persian_query_against_persian_document(
         self, client: TestClient, llm: StubLLM

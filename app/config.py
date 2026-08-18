@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str = "text-embedding-3-small"
+    # Defaults tuned for a slow (e.g. local CPU) embedding backend: measured
+    # ~2.5-2.8s/chunk against a real CPU-served BAAI/bge-m3, at which the library
+    # defaults (embed_batch_size=100, timeout=60s) reproducibly fail outright on any
+    # document with more than ~20-24 chunks (one over-long request per batch exceeds
+    # the timeout). embedding_batch_size=10 keeps each request comfortably short at
+    # that measured rate; embedding_timeout_seconds=120 adds margin on top for slower
+    # backends or larger chunk_size. A fast/hosted embedding provider can raise
+    # embedding_batch_size for higher throughput without hitting this failure mode.
+    embedding_batch_size: int = Field(default=10, ge=1)
+    embedding_timeout_seconds: float = Field(default=120.0, gt=0.0)
 
     chroma_path: Path = Path("./chroma_db")
     # Chroma's own naming rule, enforced here so a bad value fails at startup.
@@ -96,6 +106,8 @@ def build_embedding_model(settings: Settings) -> BaseEmbedding:
         model_name=settings.embedding_model,
         api_key=settings.embedding_api_key,
         api_base=settings.embedding_base_url,
+        embed_batch_size=settings.embedding_batch_size,
+        timeout=settings.embedding_timeout_seconds,
     )
 
 

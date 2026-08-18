@@ -218,6 +218,25 @@ successfully-opened store and so 409'd identically either way. Once `main.py` ex
 own a startup hook, fail-fast became simpler and no worse for recovery, so it replaced
 the per-request check rather than living alongside it.
 
+**ADR-11 — `build_llm` overrides llama-index's `OpenAI.metadata` to tolerate non-catalog
+model names, the same way `build_embedding_model` already uses `model_name=` instead of
+`model=`.** Discovered during real-provider evaluation (2026-08-17): `OpenAI.metadata`
+is read on every `chat()` call (via `to_payload()`, for telemetry) and computes
+`context_window` by looking `model` up in a fixed table of official OpenAI model names,
+raising `ValueError` for anything else — including every OpenRouter model id
+(`openai/gpt-4o-mini` included) and any other non-OpenAI model served through an
+OpenAI-compatible gateway. Unlike the embedding client, the chat client has no
+constructor-level escape hatch, and the lookup is lazy (triggered by the first real
+`chat()` call, not by construction), so it passed existing tests — which only construct
+the client — silently, and only surfaced against a real gateway. Without a fix, R-08
+("any OpenAI-compatible provider, no code change") is false for every provider except
+literal, unprefixed OpenAI model names. The fix is a small subclass, local to
+`build_llm`, that overrides `metadata` to fall back to a generous fixed context window
+(128k) when the model isn't in llama-index's catalog, rather than raising; an actual
+context-window mismatch still surfaces as a real provider error on the request itself,
+not a silent truncation. Confined entirely to `config.py` (invariant 5): this is
+provider-client construction, not a new architectural layer.
+
 ## Testing
 
 Unit-test the deterministic parts: parsing, normalization, chunking, metadata
@@ -264,32 +283,56 @@ Unresolved by the repository; decide before the affected work begins.
 
 1. **Python target.** `.python-version` pins 3.14 while `pyproject.toml` requires
    ≥ 3.11. Which is authoritative for CI and deployment?
-2. **`RETRIEVAL_MIN_SCORE` value and metric.** The default is a placeholder; the correct
-   cutoff depends on the embedding model and needs empirical tuning against real documents,
-   in both languages and cross-lingually (ADR-9). Same for `CHUNK_SIZE` / `CHUNK_OVERLAP` /
-   `RETRIEVAL_TOP_K`. The collection is created with cosine distance so that scores are
-   comparable to a fixed threshold at all.
+2. **`RETRIEVAL_MIN_SCORE` value and metric.** ~~The default is a placeholder~~
+   **Measured 2026-08-17** against a real `BAAI/bge-m3` deployment (served locally via
+   Ollama's OpenAI-compatible endpoint) and a real `openai/gpt-4o-mini` LLM (via
+   OpenRouter), on a small corpus (6 documents: English/Persian/mixed, DOCX and
+   LibreOffice-generated PDF) with 10 queries (same-language, cross-lingual with no
+   shared surface terms, and off-topic/absent-from-corpus). At `top_k=5`, cosine-similarity
+   top-1 scores for genuinely relevant queries were `>= 0.667`; top-1 scores for
+   off-topic queries were `<= 0.567` — a clean gap, with `0.60` chosen as the midpoint
+   and applied as the new default (was `0.35`, which let every off-topic query's chunks
+   through and relied entirely on the LLM's own prompt-level refusal rather than the
+   cheap deterministic retrieval-level cutoff this setting exists for). At `0.35`, answers
+   also cited most of the collection regardless of relevance, since `generate()` cites
+   every chunk it's given (by design, see `rag/generator.py`) — raising the cutoff to
+   `0.60` narrowed citations back to genuinely relevant documents without losing any
+   correct retrieval in this sample. Caveat: n=10 queries against a 9-chunk corpus is
+   small; re-measure with more real documents before trusting this as a final production
+   value, and re-measure entirely if `EMBEDDING_MODEL` changes. `CHUNK_SIZE` /
+   `CHUNK_OVERLAP` were swept at 256/512/1024 (with proportional overlap) against the
+   same corpus and queries: retrieval correctness (correct document ranked first) was
+   unchanged across all three, so the existing defaults (1024/128) were kept — this
+   corpus's documents are short enough (1–2 chunks each at 1024) that the sweep mostly
+   changed citation granularity, not correctness; it does not rule out `CHUNK_SIZE`
+   mattering more on longer real documents. `RETRIEVAL_TOP_K` was not swept
+   independently; `top_k=5` combined with the corrected `RETRIEVAL_MIN_SCORE` produced
+   reasonable results in this sample. The collection is created with cosine distance so
+   that scores are comparable to a fixed threshold at all.
 3. **Upload limits.** No maximum file size, page count, or concurrent-upload behavior is
    specified.
 4. **Cross-lingual semantic retrieval quality is untested against a real embedding
-   model.** `tests/integration/test_retriever.py` confirms a Persian query retrieves an
-   English-only document when the two share a literal token (e.g. "Kubernetes"), but the
-   test embedding is a bag-of-tokens hash, not a semantic model — it cannot demonstrate
-   that a *purely* Persian query retrieves a *purely* English document with no shared
-   surface form, which is the actual cross-lingual claim in R-10. Whether a given
-   `EMBEDDING_MODEL` clears `RETRIEVAL_MIN_SCORE` for such queries can only be verified
-   against real documents and a real provider once one is configured.
+   model.** ~~Whether a given `EMBEDDING_MODEL` clears `RETRIEVAL_MIN_SCORE` for such
+   queries can only be verified against real documents and a real provider once one is
+   configured.~~ **Verified 2026-08-17** against real `BAAI/bge-m3`: a purely-Persian
+   query with no shared surface tokens correctly retrieved an English-only DOCX and an
+   English-only PDF as top-1 (scores 0.78 and 0.74), and a purely-English query correctly
+   retrieved a Persian-only DOCX as top-1 (score 0.74) — see open question 2 for the
+   full setup. One cross-lingual case failed (an English query against what should have
+   been a Persian PDF): the cause was not retrieval or the embedding model but the PDF
+   extraction bug in open question 6 below — the target document's extracted text was
+   too corrupted to embed meaningfully, so it never surfaced. R-10's cross-lingual claim
+   holds for `bge-m3` on DOCX and on PDFs that extract cleanly.
 5. **Sentinel-based model refusal detection is untested against a real LLM.**
-   `rag/generator.py` asks the model to emit a fixed token (`[[INSUFFICIENT_CONTEXT]]`)
-   verbatim when it cannot answer, and treats that token appearing anywhere in the
-   response as a refusal. Real models can wrap instructed tokens in extra commentary,
-   translate them, or occasionally ignore the instruction under a high `temperature`
-   (the default `OpenAI` LLM client is currently built with framework defaults — no
-   `temperature=0` override yet). A substring match is deliberately lenient to reduce
-   false negatives, at the cost of a theoretical false positive if a real answer happens
-   to contain that exact bracketed string. Needs verification against the configured
-   provider once one is available; if unreliable, the alternative is structured/function-
-   call output, which is a larger change and not justified without evidence it's needed.
+   ~~Needs verification against the configured provider once one is available.~~
+   **Verified 2026-08-17** against real `openai/gpt-4o-mini` via OpenRouter (framework
+   defaults, no `temperature=0` override): 3/3 out-of-corpus queries triggered the
+   sentinel and were converted to the canned refusal correctly, with no instances of the
+   raw `[[INSUFFICIENT_CONTEXT]]` token leaking to the user, wrapped in commentary, or
+   translated, across all 10 evaluation queries (English and Persian). Sample size is
+   small (n=10, one model, one provider) — not proof the token can never leak or get
+   translated, but no evidence of the specific failure modes this question raised for
+   this model/provider pair.
 6. **RTL text order from PDF extraction, for producers that emit visual-order glyphs.**
    `parser.py` uses `pypdf`'s "layout" extraction mode rather than its default "plain"
    mode — plain mode's bidi heuristic was found, empirically, to silently drop entire
@@ -301,6 +344,26 @@ Unresolved by the repository; decide before the affected work begins.
    word or character order. Not resolvable generically without per-document layout
    analysis, which is out of scope here; affected real documents would need re-export
    from a bidi-correct source or a different extraction library.
+
+   **New, more severe finding, 2026-08-17:** against real Persian PDFs generated by
+   LibreOffice (`soffice --headless --convert-to pdf`, Vazirmatn/Noto Naskh Arabic
+   variable fonts) — a realistic, common production path for Persian PDFs, not a
+   contrived case — `pypdf` extraction is not merely mirrored but substantially
+   corrupted in **both** "layout" and "plain" mode: only ~11.5% of the true vocabulary
+   (measured against `pdftotext -layout`, which extracts these same files correctly) was
+   recovered, with some glyphs leaking as literal PostScript glyph names (e.g.
+   `/dotabovear`) directly into the extracted text. This is a `pypdf` ToUnicode/CMap
+   limitation with certain embedded variable-font subsets, not specific to this
+   document's content, and downstream: the affected document's chunks are unanswerable
+   (see open question 4) even though the source PDF is not, in fact, unreadable — a
+   groundedness risk, since it presents as "no answer in the documents" rather than "the
+   document text extraction actually failed." Genuine English-only and DOCX
+   (Persian and mixed) extraction were unaffected in this evaluation. Not fixed here —
+   evaluation scope only — but a concrete blocker for real Persian PDF support: the
+   recommended next step is comparing `pypdf` against an alternative extraction backend
+   (e.g. `pypdfium2`, `PyMuPDF`, or shelling out to `poppler`'s `pdftotext`) specifically
+   against LibreOffice-produced and other real-world Persian PDFs, which is a dependency
+   decision and needs its own sign-off before implementation.
 7. **FastAPI's built-in validation-error body is a different shape from
    `ErrorResponse`.** A malformed request (e.g. missing `query` field) gets FastAPI's own
    `{"detail": [{"loc": ..., "msg": ..., "type": ...}]}` structure — `detail` as a list of

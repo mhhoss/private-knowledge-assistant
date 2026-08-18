@@ -158,8 +158,12 @@ class TestBuildLlm:
         assert llm.model == "gpt-4o-mini"
 
     def test_accepts_an_arbitrary_non_catalog_model_name(self) -> None:
-        """The LLM client has no equivalent enum restriction — pinned here so a
-        regression there would be caught the same way as the embedding-side fix."""
+        """Unlike the embedding client, `OpenAI.metadata` (read on every `chat()` call)
+        validates `model` against a fixed catalog of official OpenAI names and raises
+        `ValueError` for anything else — verified against a real OpenRouter call with
+        `openai/gpt-4o-mini`. Construction alone doesn't trigger the lookup, so this
+        must exercise `.metadata`, not just build the client, to actually catch a
+        regression here."""
         settings = Settings(
             **settings_kwargs(
                 llm_model="qwen/qwen-2.5-72b-instruct",
@@ -170,6 +174,7 @@ class TestBuildLlm:
         llm = build_llm(settings)
 
         assert isinstance(llm, OpenAI)
+        assert llm.metadata.context_window > 0
         assert llm.model == "qwen/qwen-2.5-72b-instruct"
 
 

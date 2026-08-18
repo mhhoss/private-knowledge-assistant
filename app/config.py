@@ -50,7 +50,8 @@ class Settings(BaseSettings):
     chunk_overlap: int = Field(default=128, ge=0)
 
     retrieval_top_k: int = Field(default=5, ge=1)
-    retrieval_min_score: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Measured against BAAI/bge-m3; see ARCHITECTURE.md open question 2.
+    retrieval_min_score: float = Field(default=0.60, ge=0.0, le=1.0)
 
     api_base_url: str = "http://127.0.0.1:8000"
 
@@ -99,10 +100,44 @@ def build_embedding_model(settings: Settings) -> BaseEmbedding:
 
 
 def build_llm(settings: Settings) -> LLM:
-    """Construct the chat/completion client. The only place LLM credentials are used."""
-    from llama_index.llms.openai import OpenAI
+    """Construct the chat/completion client. The only place LLM credentials are used.
 
-    return OpenAI(
+    Works around the same kind of catalog restriction `build_embedding_model` already
+    documents, but on the chat side: `OpenAI.metadata` (read on every `chat()` call, via
+    `to_payload()`) computes `context_window` by looking `model` up in a fixed table of
+    official OpenAI model names and raises `ValueError` for anything else. Unlike the
+    embedding client, there is no `model_name=`-style escape hatch here, and the lookup
+    happens lazily at call time, not construction time — so it does not surface until a
+    real chat request is made with a non-catalog model name. Verified against a real
+    OpenRouter call: `openai/gpt-4o-mini` (and every other gateway-prefixed or
+    non-OpenAI model id) raises there. Without this override, R-08 ("any
+    OpenAI-compatible provider, no code change") would be false for every provider
+    except literal, unprefixed OpenAI model names.
+    """
+    from llama_index.core.base.llms.types import LLMMetadata
+    from llama_index.llms.openai import OpenAI
+    from llama_index.llms.openai.utils import openai_modelname_to_contextsize
+
+    class _GatewayCompatibleOpenAI(OpenAI):
+        @property
+        def metadata(self) -> LLMMetadata:
+            try:
+                context_window = openai_modelname_to_contextsize(self._get_model_name())
+            except ValueError:
+                # Not one of OpenAI's own catalog names (any OpenRouter/gateway
+                # model id lands here). 128k is a generous, non-authoritative
+                # estimate; an actual mismatch surfaces as a provider error on the
+                # request itself, not a silent truncation.
+                context_window = 128_000
+            return LLMMetadata(
+                context_window=context_window,
+                num_output=self.max_tokens or -1,
+                is_chat_model=True,
+                is_function_calling_model=True,
+                model_name=self.model,
+            )
+
+    return _GatewayCompatibleOpenAI(
         model=settings.llm_model,
         api_key=settings.llm_api_key,
         api_base=settings.llm_base_url,

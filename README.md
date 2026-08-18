@@ -82,6 +82,10 @@ embeddings; embedding settings fall back to the LLM settings when omitted.
 must support both English and Persian, and changing it invalidates an existing index —
 the app will refuse to use a mismatched one until the knowledge base is reset.
 
+`RETRIEVAL_MIN_SCORE`'s default (0.60) was measured against `BAAI/bge-m3`, not chosen
+arbitrarily — see [ARCHITECTURE.md open question 2](docs/ARCHITECTURE.md#open-questions)
+for the evaluation. Re-measure if the embedding model changes.
+
 ## Privacy
 
 `data/` (uploaded originals), `chroma_db/` (vector store), and `.env` are local runtime

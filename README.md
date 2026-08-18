@@ -33,9 +33,30 @@ Implementation order and the definition of done are in
 ## Stack
 
 Python ≥ 3.11 · `uv` · FastAPI · Streamlit · LlamaIndex · Chroma (persistent) ·
-pypdf · python-docx · pydantic-settings
+poppler (`pdftotext`) · python-docx · pydantic-settings
 
 ## Setup
+
+PDF extraction shells out to poppler's `pdftotext`, a system package — not something
+`uv sync` installs. Install it first:
+
+```bash
+# Linux (Debian/Ubuntu)
+sudo apt-get install poppler-utils
+
+# Linux (Fedora/RHEL)
+sudo dnf install poppler-utils
+
+# macOS (Homebrew)
+brew install poppler
+
+# Windows
+# Download a poppler build (e.g. https://github.com/oschwartz10612/poppler-windows),
+# extract it, and add its `bin/` folder (containing pdftotext.exe) to PATH.
+```
+
+Verify with `pdftotext -v`. Without it, PDF uploads fail with a `ParsingError`
+mentioning `poppler-utils`; DOCX uploads are unaffected.
 
 ```bash
 uv sync

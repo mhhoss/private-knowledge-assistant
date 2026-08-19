@@ -230,6 +230,31 @@ class TestEmbeddingMismatchAtStartup:
         assert response.status_code == 200
 
 
+class TestCredentialValidationAtStartup:
+    def test_blank_llm_api_key_fails_startup_when_settings_come_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import app.main as main_module
+
+        monkeypatch.setattr(
+            main_module, "get_settings", lambda: _settings(tmp_path / "chroma")
+        )
+        app = create_app()  # settings=None: exercises the real startup path
+
+        with pytest.raises(RuntimeError, match="LLM_API_KEY"), TestClient(app):
+            pass
+
+    def test_explicitly_injected_settings_skip_credential_validation(
+        self, tmp_path: Path
+    ) -> None:
+        """Tests that inject `Settings` with stub providers (never a real credential)
+        must keep working — validation is only for the real environment-loaded path."""
+        app = create_app(settings=_settings(tmp_path / "chroma"))
+
+        with TestClient(app):
+            pass  # must not raise
+
+
 class TestExistingApiBehaviorUnchanged:
     """Smoke-checks that going through the real app/lifespan (rather than the bare
     router `test_routes.py` mounts) still produces the documented contracts."""

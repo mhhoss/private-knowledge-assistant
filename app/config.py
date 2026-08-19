@@ -91,6 +91,30 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def require_credentials(settings: Settings) -> None:
+    """Fail loudly if a provider credential is blank, rather than at the first query.
+
+    `Settings` itself allows a blank `llm_api_key`/`embedding_api_key` (the default),
+    since tests construct `Settings` directly with stub providers that never need one.
+    Real application startup calls this separately so a forgotten `.env` fails at
+    startup with an actionable message instead of an opaque 502 on first use.
+    """
+    missing = [
+        name
+        for name, value in (
+            ("LLM_API_KEY", settings.llm_api_key),
+            ("EMBEDDING_API_KEY", settings.embedding_api_key),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Missing required configuration: {', '.join(missing)}. Copy "
+            ".env.example to .env and fill in your provider credentials before "
+            "starting the app."
+        )
+
+
 def build_embedding_model(settings: Settings) -> BaseEmbedding:
     """Construct the embedding client. The only place embedding credentials are used.
 

@@ -16,7 +16,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes import router
-from app.config import Settings, build_embedding_model, build_llm, get_settings
+from app.config import (
+    Settings,
+    build_embedding_model,
+    build_llm,
+    get_settings,
+    require_credentials,
+)
 from app.storage.vector_store import VectorStore
 
 
@@ -40,9 +46,24 @@ def _lifespan_for(settings_factory: Callable[[], Settings]):
     return lifespan
 
 
+def _settings_from_environment() -> Settings:
+    """The real startup path: load from the environment and fail loudly if the
+    provider credentials a test never needs (stub providers) are actually blank."""
+    settings = get_settings()
+    require_credentials(settings)
+    return settings
+
+
 def create_app(*, settings: Settings | None = None) -> FastAPI:
-    """Build the FastAPI app. `settings` overrides the environment, for tests."""
-    settings_factory = get_settings if settings is None else (lambda: settings)
+    """Build the FastAPI app. `settings` overrides the environment, for tests.
+
+    Credential validation only runs when `settings` is omitted — tests that inject
+    `Settings` directly (with stub embedding/LLM clients that never make a real
+    provider call) are intentionally exempt.
+    """
+    settings_factory = (
+        _settings_from_environment if settings is None else (lambda: settings)
+    )
     app = FastAPI(
         title="Private Knowledge Assistant",
         lifespan=_lifespan_for(settings_factory),

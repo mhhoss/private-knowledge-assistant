@@ -89,6 +89,14 @@ class ApiClient:
                 response = self._client.request(
                     method, path, files=files, json=json, timeout=timeout
                 )
+        except httpx.TimeoutException as error:
+            # Distinct from a connectivity failure: the API was reached and is very
+            # likely still indexing in the background (see `_INGEST_TIMEOUT`'s note) —
+            # telling the user it's unreachable would be actively misleading.
+            raise ApiError(
+                "This is taking longer than expected. The upload may still be "
+                "indexing in the background — check Indexed documents shortly."
+            ) from error
         except httpx.RequestError as error:
             raise ApiError(
                 "Could not reach the Private Knowledge Assistant API. "

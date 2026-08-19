@@ -8,7 +8,7 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from pydantic import ValidationError
 
-from app.config import Settings, build_embedding_model, build_llm
+from app.config import Settings, build_embedding_model, build_llm, require_credentials
 from tests.conftest import settings_kwargs
 
 pytestmark = pytest.mark.usefixtures("clean_settings_env")
@@ -52,6 +52,25 @@ class TestEmbeddingFingerprint:
             **settings_kwargs(embedding_base_url="https://proxy.internal/v1", **common)
         )
         assert direct.embedding_fingerprint == proxied.embedding_fingerprint
+
+
+class TestRequireCredentials:
+    def test_passes_when_both_credentials_are_set(self) -> None:
+        settings = Settings(**settings_kwargs(llm_api_key="key-1"))
+        require_credentials(settings)  # must not raise
+
+    def test_raises_when_llm_api_key_is_blank(self) -> None:
+        settings = Settings(**settings_kwargs(llm_api_key=""))
+        with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+            require_credentials(settings)
+
+    def test_raises_when_embedding_api_key_is_blank_despite_llm_key(self) -> None:
+        """Only reachable if a future change stops resolving embedding_api_key from
+        llm_api_key for a blank value; guards that fallback assumption explicitly."""
+        settings = Settings(**settings_kwargs(llm_api_key="key-1"))
+        settings.embedding_api_key = ""
+        with pytest.raises(RuntimeError, match="EMBEDDING_API_KEY"):
+            require_credentials(settings)
 
 
 class TestValidation:

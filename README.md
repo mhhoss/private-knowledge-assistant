@@ -92,14 +92,33 @@ free embedding backend and a hosted LLM.
    EMBEDDING_MODEL=bge-m3
    ```
 
-4. Follow **Run** below to start both processes, then open
+4. Follow **Quick run** below to start both processes, then open
    http://127.0.0.1:8501, upload a document, and ask a question.
+
+## Quick run
+
+Once `.env` is filled in, `run.ps1` (Windows) / `run.sh` (Linux/macOS) start the API,
+wait for it to become ready, then start the UI — one command, one terminal:
+
+```powershell
+.\run.ps1
+```
+
+```bash
+./run.sh
+```
+
+Open http://127.0.0.1:8501 once the UI starts. Closing the terminal (or Ctrl+C) stops
+both processes. These scripts are a thin convenience layer only; see **Run** below for
+what they do and for running each process manually.
 
 ## Run
 
 The API and the UI are two separate processes; the UI is an HTTP client of the API
 (see [ADR-1](docs/ARCHITECTURE.md#decisions)) and expects the API to already be running.
-Start each in its own terminal, from the project root:
+`run.ps1`/`run.sh` above start both automatically. To start each manually — for
+debugging, or to see each process's own output — use its own terminal, from the
+project root:
 
 **Terminal 1 — API:**
 

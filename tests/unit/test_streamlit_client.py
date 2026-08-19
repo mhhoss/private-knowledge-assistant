@@ -216,6 +216,21 @@ class TestErrorHandling:
         assert "Traceback" not in message
         assert "ConnectError" not in message
 
+    def test_timeout_is_reported_as_slow_not_unreachable(self) -> None:
+        """A long-running ingestion job that outlasts the client timeout is not the
+        same failure as the API being down — the wording must not conflate them."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=request)
+
+        client = _client(handler)
+        with pytest.raises(ApiError) as exc_info:
+            client.ingest_files([("big.pdf", b"%PDF-1.4 ...")])
+
+        message = str(exc_info.value).lower()
+        assert "longer than expected" in message
+        assert "confirm it is running" not in message
+
     def test_structured_error_response_surfaces_its_detail(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return _json_response(404, {"detail": "Document not found."})

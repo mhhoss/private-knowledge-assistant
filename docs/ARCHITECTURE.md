@@ -391,9 +391,25 @@ Unresolved by the repository; decide before the affected work begins.
    also cited most of the collection regardless of relevance, since `generate()` cites
    every chunk it's given (by design, see `rag/generator.py`) — raising the cutoff to
    `0.60` narrowed citations back to genuinely relevant documents without losing any
-   correct retrieval in this sample. Caveat: n=10 queries against a 9-chunk corpus is
+   correct retrieval in this sample. ~~Caveat: n=10 queries against a 9-chunk corpus is
    small; re-measure with more real documents before trusting this as a final production
-   value, and re-measure entirely if `EMBEDDING_MODEL` changes. `CHUNK_SIZE` /
+   value, and re-measure entirely if `EMBEDDING_MODEL` changes.~~ **Re-measured
+   2026-08-19** against the versioned `eval/` corpus (6 documents, 23 queries,
+   `eval/results/bge-m3.json`): the larger, more representative sample shifted both
+   clusters down and the gap narrower than the earlier n=10 measurement suggested — top-1
+   scores for genuinely answerable queries were `>= 0.487`, and for out-of-corpus queries
+   `<= 0.462`. At the old default of `0.60`, several correct cross-lingual answers
+   (e.g. `q11`, `q15`, `q12`, scores 0.487–0.549) would have been wrongly rejected by the
+   retrieval-level cutoff and refused, despite top-1 accuracy being 1.0 without the
+   cutoff — the threshold, not the retrieval, was the failure point. Default corrected to
+   `0.47` (the midpoint of the new gap). Two alternative models (`multilingual-e5-base`,
+   `multilingual-e5-small`) were also run against the same corpus for comparison: both
+   had *negative* separability (out-of-corpus scores exceeding answerable scores) and
+   lower top-1 accuracy (0.89 and 0.95 vs. `bge-m3`'s 1.0), so `bge-m3` remains the
+   recommended default model — see `eval/results/*.json`. Caveat: the gap is still narrow
+   (0.024) and the corpus is still small (6 documents); re-measure if `EMBEDDING_MODEL`
+   changes, and re-measure again once real multi-document, multi-topic corpora are
+   available. `CHUNK_SIZE` /
    `CHUNK_OVERLAP` were swept at 256/512/1024 (with proportional overlap) against the
    same corpus and queries: retrieval correctness (correct document ranked first) was
    unchanged across all three, so the existing defaults (1024/128) were kept — this

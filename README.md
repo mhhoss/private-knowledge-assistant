@@ -149,9 +149,10 @@ embeddings; embedding settings fall back to the LLM settings when omitted.
 must support both English and Persian, and changing it invalidates an existing index —
 the app will refuse to use a mismatched one until the knowledge base is reset.
 
-`RETRIEVAL_MIN_SCORE`'s default (0.60) was measured against `BAAI/bge-m3`, not chosen
-arbitrarily — see [ARCHITECTURE.md open question 2](docs/ARCHITECTURE.md#open-questions)
-for the evaluation. Re-measure if the embedding model changes.
+`RETRIEVAL_MIN_SCORE`'s default (0.47) was measured against `BAAI/bge-m3` on the
+versioned `eval/` corpus (23 queries, 6 documents), not chosen arbitrarily — see
+[ARCHITECTURE.md open question 2](docs/ARCHITECTURE.md#open-questions) for the
+evaluation. Re-measure if the embedding model changes.
 
 `EMBEDDING_BATCH_SIZE` (default 10) and `EMBEDDING_TIMEOUT_SECONDS` (default 120) default
 to values safe for slow backends; raise `EMBEDDING_BATCH_SIZE` for a fast/hosted provider

@@ -60,8 +60,9 @@ class Settings(BaseSettings):
     chunk_overlap: int = Field(default=128, ge=0)
 
     retrieval_top_k: int = Field(default=5, ge=1)
-    # Measured against BAAI/bge-m3; see ARCHITECTURE.md open question 2.
-    retrieval_min_score: float = Field(default=0.60, ge=0.0, le=1.0)
+    # Measured against BAAI/bge-m3 on the eval/ corpus (23 queries, 6 docs); see
+    # ARCHITECTURE.md open question 2.
+    retrieval_min_score: float = Field(default=0.47, ge=0.0, le=1.0)
 
     api_base_url: str = "http://127.0.0.1:8000"
 

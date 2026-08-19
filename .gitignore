@@ -20,4 +20,7 @@ venv/
 data/
 chroma_db/
 
+# Local test corpus for manual UI/retrieval testing
+real_corpus/
+
 .DS_Store

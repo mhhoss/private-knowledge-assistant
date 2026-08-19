@@ -1,0 +1,14 @@
+# Presentation configuration only — no application behavior lives here.
+
+[server]
+# Serves ./static/ at /app/static/, so the vendored Vazirmatn font is loaded from
+# this machine rather than a font CDN (local-first: no request leaves the host).
+enableStaticServing = true
+
+[theme]
+# Aligns Streamlit's own native accents (focus rings, primary controls) with the
+# UI's single accent, instead of its default red.
+primaryColor = "#3f6c5e"
+backgroundColor = "#faf8f4"
+secondaryBackgroundColor = "#fffefb"
+textColor = "#26221d"

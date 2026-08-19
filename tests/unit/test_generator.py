@@ -158,6 +158,79 @@ class TestModelSignaledRefusal:
         assert result.sources == []
 
 
+class TestInlineCitations:
+    """`[n]` markers must resolve to `sources[n - 1]` or not survive at all.
+
+    Every marker left in an answer is a promise the UI renders as an inspectable
+    reference, so an unresolvable one is a defect, not a cosmetic issue.
+    """
+
+    def test_valid_markers_are_preserved_verbatim(self, llm: StubLLM) -> None:
+        llm.response = "Spending rose 12% [1]. The team uses Kubernetes [2]."
+        result = generate(
+            query="What happened?", chunks=[ENGLISH_CHUNK, MIXED_CHUNK], llm=llm
+        )
+
+        assert result.answer == "Spending rose 12% [1]. The team uses Kubernetes [2]."
+        assert len(result.sources) == 2
+
+    def test_an_answer_without_markers_is_left_alone(self, llm: StubLLM) -> None:
+        """Graceful fallback: a model that ignores the citation instruction still
+        produces a usable answer, and the sources are still returned."""
+        llm.response = "Kubernetes spending rose 12%."
+        result = generate(query="q", chunks=[ENGLISH_CHUNK], llm=llm)
+
+        assert result.answer == "Kubernetes spending rose 12%."
+        assert len(result.sources) == 1
+
+    def test_out_of_range_markers_are_removed(self, llm: StubLLM) -> None:
+        llm.response = "Spending rose [1] and something else happened [7]."
+        result = generate(query="q", chunks=[ENGLISH_CHUNK], llm=llm)
+
+        assert "[7]" not in result.answer
+        assert "[1]" in result.answer
+        assert "something else happened" in result.answer
+
+    def test_zero_is_not_a_valid_marker(self, llm: StubLLM) -> None:
+        llm.response = "Spending rose [0]."
+        result = generate(query="q", chunks=[ENGLISH_CHUNK], llm=llm)
+
+        assert "[0]" not in result.answer
+
+    def test_persian_answer_keeps_its_markers(self, llm: StubLLM) -> None:
+        llm.response = "هزینه دوازده درصد افزایش یافت [1]."
+        result = generate(query="چه اتفاقی افتاد؟", chunks=[PERSIAN_CHUNK], llm=llm)
+
+        assert "[1]" in result.answer
+        assert "هزینه دوازده درصد افزایش یافت" in result.answer
+        assert result.is_refusal is False
+
+    def test_persian_answer_drops_out_of_range_markers(self, llm: StubLLM) -> None:
+        llm.response = "هزینه افزایش یافت [1] و چیز دیگری رخ داد [5]."
+        result = generate(query="چه اتفاقی افتاد؟", chunks=[PERSIAN_CHUNK], llm=llm)
+
+        assert "[5]" not in result.answer
+        assert "[1]" in result.answer
+        assert "چیز دیگری رخ داد" in result.answer
+
+    def test_a_refusal_is_never_given_citation_markers(self, llm: StubLLM) -> None:
+        llm.response = "[[INSUFFICIENT_CONTEXT]]"
+        result = generate(query="q", chunks=[ENGLISH_CHUNK], llm=llm)
+
+        assert result.is_refusal is True
+        assert "[1]" not in result.answer
+        assert result.sources == []
+
+    def test_system_prompt_asks_for_inline_citations(self, llm: StubLLM) -> None:
+        llm.response = "answer"
+        generate(query="q", chunks=[ENGLISH_CHUNK], llm=llm)
+
+        (messages,) = llm.received_messages
+        system_message = next(m for m in messages if m.role == "system")
+        assert isinstance(system_message.content, str)
+        assert "[1]" in system_message.content
+
+
 class TestPromptGrounding:
     def test_prompt_includes_context_text_and_query(self, llm: StubLLM) -> None:
         llm.response = "answer"

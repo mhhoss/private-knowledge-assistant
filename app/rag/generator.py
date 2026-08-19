@@ -8,6 +8,7 @@ context was obtained. The caller (eventually `rag/engine.py`) adapts one to the 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,11 @@ _REFUSAL_FA = "اطلاعات کافی در اسناد نمایه‌شده بر�
 # is which of two fixed refusal strings to show, per ADR-9.
 _ARABIC_SCRIPT = range(0x0600, 0x06FF + 1)
 
+# An inline source reference in a generated answer, e.g. `[2]`. The numbering is the
+# same 1-based numbering `_build_user_prompt` labels the excerpts with, so `[n]`
+# resolves to `sources[n - 1]`.
+_CITATION_MARKER = re.compile(r"\[(\d+)\]")
+
 _SYSTEM_PROMPT = f"""You are a careful assistant that answers questions using ONLY the \
 context excerpts supplied below, taken from the user's own documents.
 
@@ -37,6 +43,9 @@ knowledge, and never assume, infer, or guess anything the context does not state
 - If the context does not contain enough information to answer the question, respond \
 with exactly this text and nothing else: {_REFUSAL_TOKEN}
 - Otherwise, answer the question directly and concisely, using only the given context.
+- Cite your sources inline: after each statement, add the bracketed number of the \
+excerpt it came from, like [1] or [2], using only the numbers shown in the context. \
+Cite every statement, and never cite a number that is not in the context.
 - Respond in the same language as the question, whether English, Persian, or a mix of \
 both — regardless of which language the context is written in.
 """
@@ -109,7 +118,7 @@ def generate(*, query: str, chunks: list[ContextChunk], llm: LLM) -> GeneratedAn
         )
 
     return GeneratedAnswer(
-        answer=answer,
+        answer=_drop_unresolvable_citations(answer, len(chunks)),
         sources=[_citation(chunk) for chunk in chunks],
         is_refusal=False,
     )
@@ -121,6 +130,24 @@ def _build_user_prompt(query: str, chunks: list[ContextChunk]) -> str:
         for i, chunk in enumerate(chunks, start=1)
     )
     return f"Context:\n{excerpts}\n\nQuestion: {query}"
+
+
+def _drop_unresolvable_citations(answer: str, source_count: int) -> str:
+    """Remove `[n]` markers that do not point at a real source in `sources`.
+
+    A model may cite a number it was never given. Every marker left in the answer is
+    guaranteed to resolve to `sources[n - 1]`, so no consumer — this project's UI or any
+    future API client — has to re-validate the range or risk rendering a dead reference.
+    Markers within range are left exactly as the model wrote them.
+    """
+
+    def resolve(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        return match.group(0) if 1 <= index <= source_count else ""
+
+    stripped = _CITATION_MARKER.sub(resolve, answer)
+    # Collapse whitespace orphaned by a removed marker, without touching newlines.
+    return re.sub(r"[ \t]{2,}", " ", stripped).replace(" .", ".").strip()
 
 
 def _citation(chunk: ContextChunk) -> Citation:

@@ -8,6 +8,8 @@ or `chroma_db/`. `app/main.py` does not exist yet, so each test builds its own m
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -15,9 +17,11 @@ from fastapi.testclient import TestClient
 from openai import APIConnectionError
 
 from app.api import routes
-from app.config import Settings
+from app.config import ProviderRegistry, Settings
+from app.documents.processor import process_document
+from app.rag.indexer import index_document
 from app.storage.vector_store import VectorStore
-from tests.conftest import StubEmbedding, StubLLM, settings_kwargs
+from tests.conftest import STUB_FINGERPRINT, StubEmbedding, StubLLM, settings_kwargs
 from tests.docx_fixtures import build_docx
 from tests.pdf_fixtures import build_pdf
 
@@ -307,3 +311,400 @@ class TestResponseSchemas:
                 "chunk_id",
                 "excerpt",
             }
+
+
+class TestSettingsEndpoint:
+    """`GET /settings` reports provider configuration without leaking credentials."""
+
+    def test_reports_both_providers(self, client: TestClient) -> None:
+        response = client.get("/settings")
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body.keys()) == {"llm", "embedding"}
+        assert set(body["llm"].keys()) == {
+            "model",
+            "host",
+            "base_url",
+            "masked_key",
+            "is_local",
+        }
+
+    def test_never_returns_a_usable_credential(self, client: TestClient) -> None:
+        secret = "sk-supersecretvalue-1234"
+        app = FastAPI()
+        app.include_router(routes.router)
+        app.dependency_overrides[routes._get_settings] = lambda: _settings(
+            llm_api_key=secret
+        )
+        body = TestClient(app).get("/settings").json()
+
+        assert secret not in json.dumps(body)
+        assert "•" in body["llm"]["masked_key"]
+
+    def test_marks_a_loopback_embedding_provider_as_local(
+        self, client: TestClient
+    ) -> None:
+        app = FastAPI()
+        app.include_router(routes.router)
+        app.dependency_overrides[routes._get_settings] = lambda: _settings(
+            llm_api_key="k",
+            embedding_base_url="http://127.0.0.1:11434/v1",
+        )
+        body = TestClient(app).get("/settings").json()
+
+        assert body["embedding"]["is_local"] is True
+
+    def test_marks_a_hosted_embedding_provider_as_not_local(self) -> None:
+        app = FastAPI()
+        app.include_router(routes.router)
+        app.dependency_overrides[routes._get_settings] = lambda: _settings(
+            llm_api_key="k",
+            embedding_base_url="https://api.openai.com/v1",
+        )
+        body = TestClient(app).get("/settings").json()
+
+        assert body["embedding"]["is_local"] is False
+        assert body["embedding"]["host"] == "api.openai.com"
+
+
+class TestConnectionTestEndpoint:
+    """`POST /settings/test` makes real provider calls and reports outcomes as data."""
+
+    def test_both_providers_reachable(self, client: TestClient) -> None:
+        response = client.post("/settings/test")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["llm"] == {"ok": True, "detail": None}
+        assert body["embedding"] == {"ok": True, "detail": None}
+
+    def test_an_unreachable_llm_is_reported_as_data_not_an_error(
+        self, store: VectorStore, embed_model: StubEmbedding
+    ) -> None:
+        broken = StubLLM()
+        broken.error = RuntimeError("provider refused the connection")
+        app = FastAPI()
+        app.include_router(routes.router)
+        app.dependency_overrides[routes._get_settings] = lambda: _settings()
+        app.dependency_overrides[routes._get_vector_store] = lambda: store
+        app.dependency_overrides[routes._get_embed_model] = lambda: embed_model
+        app.dependency_overrides[routes._get_llm] = lambda: broken
+
+        response = TestClient(app).post("/settings/test")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["llm"]["ok"] is False
+        assert "refused the connection" in body["llm"]["detail"]
+        assert body["embedding"]["ok"] is True
+
+
+# --- runtime provider updates (ADR-10's amendment) ---
+
+
+@pytest.fixture
+def registry() -> ProviderRegistry:
+    return ProviderRegistry(
+        settings=_settings(), llm=StubLLM(), embed_model=StubEmbedding()
+    )
+
+
+@pytest.fixture
+def registry_app(store: VectorStore, registry: ProviderRegistry) -> FastAPI:
+    """Every provider-reading dependency reads the *same* mutable `registry`, so a
+    successful update inside one request is visible to the next — exactly like the
+    real `app.state.registry` `app/main.py` builds."""
+    application = FastAPI()
+    application.include_router(routes.router)
+    application.dependency_overrides[routes._get_registry] = lambda: registry
+    application.dependency_overrides[routes._get_settings] = lambda: registry.settings
+    application.dependency_overrides[routes._get_vector_store] = lambda: store
+    application.dependency_overrides[routes._get_embed_model] = (
+        lambda: registry.embed_model
+    )
+    application.dependency_overrides[routes._get_llm] = lambda: registry.llm
+    return application
+
+
+@pytest.fixture
+def registry_client(registry_app: FastAPI) -> TestClient:
+    return TestClient(registry_app)
+
+
+class TestUpdateLlmSettings:
+    """`POST /settings/llm`: build -> probe -> commit only on success (never `.env`)."""
+
+    def test_success_replaces_the_active_client_and_settings(
+        self,
+        registry_client: TestClient,
+        registry: ProviderRegistry,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        replacement = StubLLM(response="new provider")
+        monkeypatch.setattr(routes, "build_llm", lambda settings: replacement)
+
+        response = registry_client.post(
+            "/settings/llm",
+            json={"api_key": "new-key", "base_url": "http://new-host/v1", "model": "gpt-x"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["model"] == "gpt-x"
+        assert body["base_url"] == "http://new-host/v1"
+        assert registry.llm is replacement
+        assert registry.settings.llm_model == "gpt-x"
+        assert registry.settings.llm_api_key == "new-key"
+
+    def test_probe_failure_leaves_the_previous_client_and_settings_untouched(
+        self,
+        registry_client: TestClient,
+        registry: ProviderRegistry,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_llm = registry.llm
+        original_settings = registry.settings
+        broken = StubLLM()
+        broken.error = RuntimeError("provider refused the connection")
+        monkeypatch.setattr(routes, "build_llm", lambda settings: broken)
+
+        response = registry_client.post(
+            "/settings/llm",
+            json={"api_key": "k", "base_url": "http://unreachable/v1", "model": "x"},
+        )
+
+        assert response.status_code == 502
+        assert "refused the connection" in response.json()["detail"]
+        assert registry.llm is original_llm
+        assert registry.settings is original_settings
+
+    def test_probe_failure_never_echoes_the_raw_api_key(
+        self,
+        registry_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        secret = "sk-do-not-leak-me-1234"
+        broken = StubLLM()
+        broken.error = RuntimeError(f"authentication failed for key {secret}")
+        monkeypatch.setattr(routes, "build_llm", lambda settings: broken)
+
+        response = registry_client.post(
+            "/settings/llm",
+            json={"api_key": secret, "base_url": "http://host/v1", "model": "x"},
+        )
+
+        assert response.status_code == 502
+        assert secret not in response.text
+        assert "•" in response.json()["detail"]
+
+    def test_blank_api_key_keeps_the_currently_active_credential(
+        self,
+        registry_client: TestClient,
+        registry: ProviderRegistry,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        registry.settings.llm_api_key = "already-active-key"
+        seen: dict[str, str] = {}
+
+        def _capture(settings: Settings) -> StubLLM:
+            seen["api_key"] = settings.llm_api_key
+            return StubLLM()
+
+        monkeypatch.setattr(routes, "build_llm", _capture)
+
+        response = registry_client.post(
+            "/settings/llm",
+            json={"api_key": "", "base_url": "http://host/v1", "model": "x"},
+        )
+
+        assert response.status_code == 200
+        assert seen["api_key"] == "already-active-key"
+        assert registry.settings.llm_api_key == "already-active-key"
+
+
+class TestUpdateEmbeddingSettings:
+    """`POST /settings/embedding`: build -> probe -> fingerprint-safe commit (ADR-8)."""
+
+    def test_success_when_the_store_is_empty(
+        self,
+        registry_client: TestClient,
+        registry: ProviderRegistry,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        replacement = StubEmbedding()
+        monkeypatch.setattr(routes, "build_embedding_model", lambda settings: replacement)
+
+        response = registry_client.post(
+            "/settings/embedding",
+            json={"api_key": "k", "base_url": "http://ollama/v1", "model": "bge-m3"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["model"] == "bge-m3"
+        assert registry.embed_model is replacement
+        assert registry.settings.embedding_model == "bge-m3"
+
+    def test_external_provider_returning_real_vectors_is_accepted(
+        self,
+        registry_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`StubEmbedding` stands in for any OpenAI-compatible external provider here:
+        the update succeeds because the probe gets back an actual embedding vector,
+        the same generic path a real hosted provider goes through (R-08)."""
+        monkeypatch.setattr(
+            routes, "build_embedding_model", lambda settings: StubEmbedding()
+        )
+
+        response = registry_client.post(
+            "/settings/embedding",
+            json={
+                "api_key": "k",
+                "base_url": "https://api.openai.com/v1",
+                "model": "text-embedding-3-small",
+            },
+        )
+
+        assert response.status_code == 200
+
+    def test_probe_failure_leaves_the_previous_client_and_settings_untouched(
+        self,
+        registry_client: TestClient,
+        registry: ProviderRegistry,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_embed_model = registry.embed_model
+        original_settings = registry.settings
+        broken = StubEmbedding()
+
+        def _boom(text: str) -> list[float]:
+            raise RuntimeError("provider unreachable")
+
+        broken._get_query_embedding = _boom  # type: ignore[method-assign]
+        monkeypatch.setattr(routes, "build_embedding_model", lambda settings: broken)
+
+        response = registry_client.post(
+            "/settings/embedding",
+            json={"api_key": "k", "base_url": "http://unreachable/v1", "model": "x"},
+        )
+
+        assert response.status_code == 502
+        assert registry.embed_model is original_embed_model
+        assert registry.settings is original_settings
+
+    def test_fingerprint_conflict_with_existing_documents_returns_409(
+        self,
+        registry_client: TestClient,
+        registry: ProviderRegistry,
+        store: VectorStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ADR-8 must never be silently bypassed by this new write path: existing
+        chunks built under one model block a switch to an incompatible one, and
+        nothing here resets or deletes them to make the switch succeed anyway."""
+        registry.settings.embedding_model = STUB_FINGERPRINT
+        chunks = process_document(
+            document_id="doc-1",
+            filename="report.pdf",
+            file_type="pdf",
+            raw_text="Some indexed content.",
+            chunk_size=200,
+            chunk_overlap=20,
+        )
+        index_document(store=store, embed_model=registry.embed_model, chunks=chunks)
+        assert store.count() == 1
+
+        monkeypatch.setattr(
+            routes, "build_embedding_model", lambda settings: StubEmbedding()
+        )
+
+        response = registry_client.post(
+            "/settings/embedding",
+            json={
+                "api_key": "k",
+                "base_url": "http://ollama/v1",
+                "model": "a-different-model",
+            },
+        )
+
+        assert response.status_code == 409
+        assert registry.settings.embedding_model == STUB_FINGERPRINT
+        assert store.count() == 1
+
+    def test_no_conflict_when_the_new_fingerprint_matches_existing_documents(
+        self,
+        registry_client: TestClient,
+        registry: ProviderRegistry,
+        store: VectorStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        registry.settings.embedding_model = STUB_FINGERPRINT
+        chunks = process_document(
+            document_id="doc-1",
+            filename="report.pdf",
+            file_type="pdf",
+            raw_text="Some indexed content.",
+            chunk_size=200,
+            chunk_overlap=20,
+        )
+        index_document(store=store, embed_model=registry.embed_model, chunks=chunks)
+
+        monkeypatch.setattr(
+            routes, "build_embedding_model", lambda settings: StubEmbedding()
+        )
+
+        response = registry_client.post(
+            "/settings/embedding",
+            json={
+                "api_key": "k",
+                "base_url": "http://ollama/v1",
+                "model": STUB_FINGERPRINT,
+            },
+        )
+
+        assert response.status_code == 200
+        assert store.count() == 1
+
+
+class TestProviderReplacementVisibility:
+    """`GET /settings` reflects the active runtime configuration, and a replacement
+    takes effect for the next request without disturbing the previous client object
+    (an in-flight request holding it simply keeps using it, unmutated)."""
+
+    def test_get_settings_reflects_a_runtime_llm_update(
+        self,
+        registry_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(routes, "build_llm", lambda settings: StubLLM())
+
+        before = registry_client.get("/settings").json()
+        registry_client.post(
+            "/settings/llm",
+            json={"api_key": "k", "base_url": "http://new-host/v1", "model": "gpt-x"},
+        )
+        after = registry_client.get("/settings").json()
+
+        assert before["llm"]["model"] != after["llm"]["model"]
+        assert after["llm"]["model"] == "gpt-x"
+        assert after["llm"]["base_url"] == "http://new-host/v1"
+
+    def test_the_previous_client_object_is_not_mutated_by_a_replacement(
+        self,
+        registry_client: TestClient,
+        registry: ProviderRegistry,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        assert isinstance(registry.llm, StubLLM)
+        held_by_an_in_flight_request = registry.llm
+        held_by_an_in_flight_request.response = "still works"
+        monkeypatch.setattr(routes, "build_llm", lambda settings: StubLLM())
+
+        registry_client.post(
+            "/settings/llm",
+            json={"api_key": "k", "base_url": "http://new-host/v1", "model": "gpt-x"},
+        )
+
+        assert registry.llm is not held_by_an_in_flight_request
+        assert held_by_an_in_flight_request.response == "still works"
+        assert held_by_an_in_flight_request.error is None

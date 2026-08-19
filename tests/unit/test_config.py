@@ -8,7 +8,14 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from pydantic import ValidationError
 
-from app.config import Settings, build_embedding_model, build_llm, require_credentials
+from app.config import (
+    Settings,
+    build_embedding_model,
+    build_llm,
+    describe_providers,
+    mask_secret,
+    require_credentials,
+)
 from tests.conftest import settings_kwargs
 
 pytestmark = pytest.mark.usefixtures("clean_settings_env")
@@ -52,6 +59,47 @@ class TestEmbeddingFingerprint:
             **settings_kwargs(embedding_base_url="https://proxy.internal/v1", **common)
         )
         assert direct.embedding_fingerprint == proxied.embedding_fingerprint
+
+
+class TestSecretMasking:
+    def test_a_long_secret_keeps_only_a_recognizable_head_and_tail(self) -> None:
+        masked = mask_secret("sk-or-v1-abcdefghijklmnop4f2a")
+        assert masked.startswith("sk-or-v1")
+        assert masked.endswith("4f2a")
+        assert "abcdefghijkl" not in masked
+
+    def test_a_short_secret_is_fully_hidden(self) -> None:
+        assert mask_secret("short") == "•" * 8
+
+    def test_an_empty_secret_is_reported_as_unset(self) -> None:
+        assert mask_secret("") == "not set"
+
+
+class TestProviderDescription:
+    def test_loopback_embedding_host_is_local(self) -> None:
+        settings = Settings(
+            **settings_kwargs(
+                llm_api_key="k", embedding_base_url="http://127.0.0.1:11434/v1"
+            )
+        )
+        _, embedding = describe_providers(settings)
+        assert embedding.is_local is True
+        assert embedding.host == "127.0.0.1:11434"
+
+    def test_hosted_embedding_host_is_not_local(self) -> None:
+        settings = Settings(
+            **settings_kwargs(
+                llm_api_key="k", embedding_base_url="https://api.openai.com/v1"
+            )
+        )
+        _, embedding = describe_providers(settings)
+        assert embedding.is_local is False
+
+    def test_description_never_carries_the_raw_key(self) -> None:
+        settings = Settings(**settings_kwargs(llm_api_key="sk-do-not-leak-me-1234"))
+        llm, embedding = describe_providers(settings)
+        assert "do-not-leak-me" not in llm.masked_key
+        assert "do-not-leak-me" not in embedding.masked_key
 
 
 class TestRequireCredentials:
@@ -274,3 +322,51 @@ class TestEnvironmentBinding:
         assert settings.llm_model == "gpt-from-env"
         assert settings.embedding_model == "embed-from-env"
         assert settings.retrieval_top_k == 9
+
+
+class TestEmbeddingDefault:
+    def test_bge_m3_is_the_default_embedding_model(self) -> None:
+        """The shipped local-first default (README's Quick start; the model every
+        retrieval default in ARCHITECTURE.md's open question 2 was tuned against)."""
+        settings = Settings(**settings_kwargs())
+        assert settings.embedding_model == "bge-m3"
+
+
+class TestProviderRegistry:
+    """`ProviderRegistry` only holds already-built, already-probed clients; it never
+    constructs anything itself (ADR-10's amendment)."""
+
+    def test_replace_llm_updates_settings_and_client_together(self) -> None:
+        from app.config import ProviderRegistry
+        from tests.conftest import StubEmbedding, StubLLM
+
+        original_settings = Settings(**settings_kwargs(llm_model="gpt-4o-mini"))
+        registry = ProviderRegistry(
+            settings=original_settings, llm=StubLLM(), embed_model=StubEmbedding()
+        )
+        new_settings = original_settings.model_copy(update={"llm_model": "gpt-4o"})
+        new_llm = StubLLM()
+
+        registry.replace_llm(settings=new_settings, llm=new_llm)
+
+        assert registry.settings is new_settings
+        assert registry.llm is new_llm
+        assert registry.settings.llm_model == "gpt-4o"
+
+    def test_replace_embedding_leaves_llm_untouched(self) -> None:
+        from app.config import ProviderRegistry
+        from tests.conftest import StubEmbedding, StubLLM
+
+        settings = Settings(**settings_kwargs())
+        original_llm = StubLLM()
+        registry = ProviderRegistry(
+            settings=settings, llm=original_llm, embed_model=StubEmbedding()
+        )
+        new_settings = settings.model_copy(update={"embedding_model": "bge-m3"})
+        new_embed_model = StubEmbedding()
+
+        registry.replace_embedding(settings=new_settings, embed_model=new_embed_model)
+
+        assert registry.embed_model is new_embed_model
+        assert registry.llm is original_llm
+        assert registry.settings.embedding_model == "bge-m3"

@@ -193,21 +193,26 @@ Language is deliberately not stored in chunk metadata: nothing routes on it, and
 guess would be wrong for mixed-language documents.
 
 **ADR-10 — Settings, the embedding client, the LLM client, and the `VectorStore` are
-each built once at startup, in `main.py`'s `lifespan`, and reused for every request;
-`EmbeddingMismatchError` therefore fails application startup, not a request.**
-`app/main.py` stores each on `app.state`; `api/routes.py`'s dependencies (`_get_settings`
-etc.) only read `request.app.state`, never construct anything (invariant 5 stays
-satisfied — `config.py` is still the only place credentials are read, just read once).
-This is safe because the app is local and single-user: there is no per-request identity
-or tenancy that would demand a fresh client, so one long-lived client per process is
-strictly simpler than reopening a Chroma client and rebuilding provider clients on every
-call. Opening the `VectorStore` in `lifespan` is also where the ADR-8 fingerprint check
-now runs: a mismatch raises `EmbeddingMismatchError` out of `lifespan`, which fails
-startup — the process never begins serving requests against an index it cannot safely
-read or write, rather than every request paying for a re-check that can only ever have
-one answer for the lifetime of the process. Recovery is out-of-process either way: fix
-`EMBEDDING_MODEL` back or clear `chroma_db/`, then restart — `POST /reset` cannot help,
-since the process that would serve it never finishes starting up.
+each built once at startup, in `main.py`'s `lifespan`; `EmbeddingMismatchError`
+therefore fails application startup, not a request.** *(Amended by ADR-14: the
+LLM/embedding half of this is no longer "reused for every request" — see there. The
+`VectorStore` half is unchanged and is not superseded.)* `app/main.py` stores the
+`VectorStore` on `app.state`; `api/routes.py`'s `_get_vector_store` only reads
+`request.app.state`, never constructs anything (invariant 5 stays satisfied —
+`config.py` is still the only place credentials are read and clients are built). This is
+safe because the app is local and single-user: there is no per-request identity or
+tenancy that would demand a fresh client, so one long-lived store per process is
+strictly simpler than reopening a Chroma client on every call. Opening the `VectorStore`
+in `lifespan` is also where the ADR-8 fingerprint check now runs: a mismatch raises
+`EmbeddingMismatchError` out of `lifespan`, which fails startup — the process never
+begins serving requests against an index it cannot safely read or write, rather than
+every request paying for a re-check that can only ever have one answer for the lifetime
+of the process. Recovery from a *startup-time* mismatch is out-of-process either way:
+fix `EMBEDDING_MODEL` back or clear `chroma_db/`, then restart — `POST /reset` cannot
+help, since the process that would serve it never finishes starting up. (A mismatch
+discovered later, from a runtime provider update, is a different situation — ADR-14
+covers it: the store is never reopened, so this paragraph's "out-of-process" recovery
+doesn't apply there.)
 
 Superseded interim design: an earlier revision, written before `main.py` existed,
 resolved this by opening a fresh `VectorStore` per request and translating a mismatch to
@@ -282,6 +287,44 @@ slower conditions or a larger `CHUNK_SIZE`. A fast/hosted embedding backend can 
 a client-construction tuning change, not a retrieval/chunking/Chroma/generation change —
 confined to `config.py` per invariant 5, same as ADR-11.
 
+**ADR-14 — The LLM and embedding clients may be replaced at runtime, via
+`POST /settings/llm`/`POST /settings/embedding`; the `VectorStore` may not (amends
+ADR-10).** R-08 originally meant "via environment variables, no code change"; a user
+who wants to try a different key, model, or gateway had to edit `.env` and restart both
+processes. `config.py` gains one new type, `ProviderRegistry` — a small, plain
+dataclass holding the `Settings`/`LLM`/`BaseEmbedding` currently in effect, with two
+methods (`replace_llm`, `replace_embedding`) that only ever reassign its own fields.
+`app/main.py`'s `lifespan` builds one and stores it as `app.state.registry`;
+`api/routes.py`'s `_get_settings`/`_get_embed_model`/`_get_llm` now read through it
+instead of reading `app.state` directly, so every other route is unaffected by this
+change. The registry constructs nothing itself — `build_llm`/`build_embedding_model`
+remain the only client constructors (invariant 5 intact) — it is deliberately not a
+provider abstraction, plugin system, or dependency-injection framework: a request-scoped
+mutable holder, and nothing else. The two new routes follow one fixed sequence, never
+skipped: build a candidate client from the requested values -> make one real call
+against it (`probe_llm`/`probe_embedding`) -> only on success, hand it to the registry.
+A failed probe raises before the registry is touched, so the previously active client
+keeps serving every request exactly as before — there is no partial or torn state. A
+request already holding the old client via dependency injection (FastAPI resolves
+`Depends(_get_llm)` once per request) simply finishes with it; the registry is never
+mutated in place mid-response, only reassigned between requests, so this needs no lock.
+The embedding route adds one more step ADR-8 requires: after a successful probe, it
+calls `VectorStore.adopt_embedding_fingerprint` — a no-op if the fingerprint already
+matches, a same-instance metadata update if the collection is empty, and an
+`EmbeddingMismatchError` (translated to HTTP 409) if chunks already exist under a
+different model. That call never resets or deletes data itself; recovery is still the
+same explicit `POST /reset` ADR-8 already prescribes. The `VectorStore` instance itself
+is never replaced or reopened by any of this — the registry holds providers, not
+storage, and `CHROMA_PATH`/`CHROMA_COLLECTION` remain environment-only, unchanged from
+ADR-10. All of this is process-local: nothing here writes to `.env`, so a runtime change
+is lost on restart and `.env` is authoritative again — a deliberate simplicity choice
+(ADR-10's "no per-request identity or tenancy" reasoning extends naturally to "no
+durable multi-user config store" either) that keeps `config.py` the single place
+credentials are ever read, rather than adding a second, file-writing path to the same
+data. `mask_secret` and a new `_sanitize_provider_error` helper apply to this path
+exactly as they already did to `GET /settings`, so a probe failure's error message can
+never leak a raw key back to the caller (R-08).
+
 ## Performance
 
 Scale evaluation (2026-08-18) against the current production setup: poppler PDF
@@ -345,7 +388,11 @@ Integration-test the transport layer (`api/routes.py`, `main.py`) through a real
 `TestClient`: request validation, response-schema shape, and the startup-time embedding
 fingerprint check (ADR-10) — the same stubbed LLM/embedding clients, injected via
 `app.dependency_overrides` or a monkeypatched `main.build_llm`/`build_embedding_model`,
-stand in for real providers here too.
+stand in for real providers here too. The runtime provider-update routes (ADR-14) get
+the same treatment via a `ProviderRegistry`-backed fixture: a successful update, a
+failed probe leaving the previous client and settings untouched, a raw key never
+appearing in a probe-failure response, and an embedding fingerprint conflict returning
+409 without touching the vector store.
 
 Unit-test `streamlit_app.py`'s `ApiClient` against `httpx.MockTransport` — request
 shape, response decoding, and error-message translation — never a running UI or a

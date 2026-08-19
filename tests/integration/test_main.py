@@ -92,9 +92,9 @@ class TestStartupBehavior:
 
         with TestClient(app):
             assert isinstance(app.state.store, VectorStore)
-            assert app.state.settings.chroma_collection == "test_kb"
-            assert app.state.embed_model is not None
-            assert app.state.llm is not None
+            assert app.state.registry.settings.chroma_collection == "test_kb"
+            assert app.state.registry.embed_model is not None
+            assert app.state.registry.llm is not None
 
     def test_requests_work_once_started(self, tmp_path: Path) -> None:
         app = create_app(settings=_settings(tmp_path / "chroma"))
@@ -137,14 +137,18 @@ class TestSharedDependencyLifecycle:
     def test_embed_model_and_llm_are_each_a_single_shared_instance(
         self, tmp_path: Path
     ) -> None:
+        """Still true (ADR-10's amendment): as long as nothing calls one of the
+        runtime-update routes, the registry hands out the same instances every time —
+        it only replaces them on an explicit, successful update (see
+        `TestProviderReplacement` in `test_routes.py`)."""
         app = create_app(settings=_settings(tmp_path / "chroma"))
 
         with TestClient(app) as client:
-            embed_a = app.state.embed_model
-            llm_a = app.state.llm
+            embed_a = app.state.registry.embed_model
+            llm_a = app.state.registry.llm
             client.get("/documents")
-            embed_b = app.state.embed_model
-            llm_b = app.state.llm
+            embed_b = app.state.registry.embed_model
+            llm_b = app.state.registry.llm
 
         assert embed_a is embed_b
         assert llm_a is llm_b

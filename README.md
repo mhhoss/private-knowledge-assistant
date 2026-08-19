@@ -65,7 +65,8 @@ cp .env.example .env   # then fill in credentials
 
 ## Quick start: Ollama (BGE-M3) + OpenRouter
 
-This is the setup this project has actually been run and evaluated against (see
+This is the shipped default (`.env.example`'s embedding values) and the setup this
+project has actually been run and evaluated against (see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)'s Performance section) — a local,
 free embedding backend and a hosted LLM.
 
@@ -146,8 +147,15 @@ uv run pytest tests/unit -q
 
 ## Configuration
 
-All configuration is environment-driven and loaded through `app/config.py`; no
-provider details are hardcoded. `.env.example` is the authoritative list of variables.
+Configuration is environment-driven and loaded through `app/config.py`; no provider
+details are hardcoded. `.env.example` is the authoritative list of variables, and the
+default there is BAAI/bge-m3 served locally via Ollama — local-first, no document text
+leaves the machine. A hosted embedding provider is fully supported as an alternative
+(see `.env.example`), at the cost of sending document text to it.
+
+The Models panel in the UI can also change the LLM and embedding provider/model/key
+while the app is running — see "Changing providers at runtime" below. That never
+touches `.env`; restarting the app always falls back to whatever `.env` says.
 
 The provider must be OpenAI-compatible. LLM and embedding credentials are configured
 separately because some gateways (e.g. OpenRouter) serve chat completions but not
@@ -176,6 +184,19 @@ evaluation. Re-measure if the embedding model changes.
 `EMBEDDING_BATCH_SIZE` (default 10) and `EMBEDDING_TIMEOUT_SECONDS` (default 120) default
 to values safe for slow backends; raise `EMBEDDING_BATCH_SIZE` for a fast/hosted provider
 to improve ingestion throughput. See the Performance / Scale section below.
+
+### Changing providers at runtime
+
+The Models panel can replace the LLM or embedding provider (key, base URL, model)
+without restarting: it builds a client with the new values, makes one real call to
+confirm it actually works, and only then makes it the active one — a failed check
+leaves whichever provider was already running untouched. This is process-local only
+(never written to `.env`); restarting the app reverts to whatever `.env` says.
+
+Switching the embedding model this way is refused with an error, not silently applied,
+if documents are already indexed under a different one — exactly the same rule
+`EMBEDDING_MODEL` follows in `.env` (see above). Reset the knowledge base first if you
+want to switch anyway.
 
 ### Choosing an embedding backend
 

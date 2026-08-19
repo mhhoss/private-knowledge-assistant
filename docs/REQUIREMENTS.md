@@ -25,12 +25,16 @@ Single-user, local, v1.
 | R-05 | Return citations with filename and the supporting excerpt for every answer |
 | R-06 | List indexed documents |
 | R-07 | Delete an individual document, or reset the entire knowledge base |
-| R-08 | Switch LLM/embedding provider via environment variables, no code change |
+| R-08 | Switch LLM/embedding provider — via environment variables (persists across restarts), or from the UI at runtime (process-local only) — with no code change either way |
 | R-09 | Process each uploaded file independently and report per-file success or failure |
 | R-10 | Support English and Persian documents and queries, including mixed-language text |
 | R-11 | Refuse to use an index built with an incompatible embedding configuration |
 
-R-08 covers OpenAI-compatible providers and gateways only.
+R-08 covers OpenAI-compatible providers and gateways only. A runtime (UI) provider
+change is validated with one real call before it takes effect, is never written to
+`.env`, and — for the embedding provider specifically — is refused (R-11) rather than
+applied if it would conflict with an already-indexed knowledge base; see ARCHITECTURE.md
+ADR-14.
 
 ### Ingestion outcomes (R-09)
 
@@ -92,7 +96,7 @@ Non-negotiable; these define correctness for R-04/R-05.
 | US-04 | See which document and which part each answer came from | R-05 |
 | US-05 | See which documents are currently indexed | R-06 |
 | US-06 | Delete individual documents or reset the knowledge base | R-07 |
-| US-07 | *(developer)* Switch LLM providers via environment variables, and be stopped rather than given garbage results when the change invalidates the index | R-08, R-11 |
+| US-07 | Switch LLM/embedding providers — via environment variables or from the UI — and be stopped rather than given garbage results when the change invalidates the index | R-08, R-11 |
 | US-08 | Use Persian documents and ask questions in Persian, with the same behavior as English | R-10 |
 
 ## Out of scope (v1)

@@ -92,6 +92,33 @@ class VectorStore:
         self._llama_store = ChromaVectorStore(chroma_collection=self._collection)
 
     @property
+    def embedding_fingerprint(self) -> str:
+        """The embedding model this collection is currently keyed to (ADR-8)."""
+        return self._fingerprint
+
+    def adopt_embedding_fingerprint(self, fingerprint: str) -> None:
+        """Repoint this collection at a new embedding configuration, if safe.
+
+        Mirrors `_open_collection`'s own empty-adopt path: a no-op if `fingerprint`
+        already matches, and only otherwise possible while the collection holds no
+        chunks. Raises `EmbeddingMismatchError` — never silently — when chunks already
+        exist under a different embedding model (ADR-8, R-11); recovery is still a
+        knowledge-base reset, not this call, so it never resets or deletes data itself.
+        """
+        if fingerprint == self._fingerprint:
+            return
+        if self.count() != 0:
+            raise EmbeddingMismatchError(
+                f"Collection '{self._name}' has {self.count()} indexed chunk(s) built "
+                f"with embedding model {self._fingerprint!r}; cannot switch to "
+                f"{fingerprint!r} without resetting the knowledge base first."
+            )
+        self._fingerprint = fingerprint
+        self._client.delete_collection(name=self._name)
+        self._collection = self._create_collection()
+        self._llama_store = ChromaVectorStore(chroma_collection=self._collection)
+
+    @property
     def llama_vector_store(self) -> ChromaVectorStore:
         """LlamaIndex adapter for this collection, for indexing and retrieval."""
         return self._llama_store

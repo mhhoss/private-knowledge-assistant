@@ -5,9 +5,11 @@ The single source of credentials, model names, and provider URLs (invariant 5).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,10 +34,14 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
 
     # Embedding provider. Left unset, it reuses the LLM credentials and endpoint;
-    # see ADR-5 for why these are separable at all.
+    # see ADR-5 for why these are separable at all. The shipped default pairs with the
+    # README's Quick start: BAAI/bge-m3 served locally via Ollama — a real base URL
+    # (e.g. EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1) still needs setting in `.env`
+    # for that pairing to actually run; a hosted embedding provider remains fully
+    # supported by setting these three variables to it instead (ADR-5, R-08).
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "bge-m3"
     # Defaults tuned for a slow (e.g. local CPU) embedding backend: measured
     # ~2.5-2.8s/chunk against a real CPU-served BAAI/bge-m3, at which the library
     # defaults (embed_batch_size=100, timeout=60s) reproducibly fail outright on any
@@ -115,6 +121,72 @@ def require_credentials(settings: Settings) -> None:
         )
 
 
+@dataclass(frozen=True)
+class ProviderDescription:
+    """What a user may safely be shown about one configured provider.
+
+    Deliberately carries a *masked* key, never the secret: this is the only
+    representation of provider configuration that leaves the process, so the masking
+    cannot be forgotten at a call site. `base_url` carries no credential and is shown
+    in full (not just `host`) so a runtime-edit form can be pre-filled with it.
+    """
+
+    model: str
+    host: str
+    base_url: str
+    masked_key: str
+    is_local: bool
+
+
+def mask_secret(value: str) -> str:
+    """Render a credential as recognizable-but-unusable, e.g. `sk-or-v1••••••4f2a`."""
+    if not value:
+        return "not set"
+    if len(value) <= 8:
+        return "•" * 8
+    return f"{value[:8]}{'•' * 6}{value[-4:]}"
+
+
+def _is_local_host(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"} or host.endswith(
+        ".local"
+    )
+
+
+def describe_providers(settings: Settings) -> tuple[ProviderDescription, ProviderDescription]:
+    """Describe the LLM and embedding providers for display: `(llm, embedding)`."""
+    return (
+        ProviderDescription(
+            model=settings.llm_model,
+            host=urlparse(settings.llm_base_url).netloc or settings.llm_base_url,
+            base_url=settings.llm_base_url,
+            masked_key=mask_secret(settings.llm_api_key),
+            is_local=_is_local_host(settings.llm_base_url),
+        ),
+        ProviderDescription(
+            model=settings.embedding_model,
+            host=urlparse(settings.embedding_base_url or "").netloc
+            or (settings.embedding_base_url or ""),
+            base_url=settings.embedding_base_url or "",
+            masked_key=mask_secret(settings.embedding_api_key or ""),
+            is_local=_is_local_host(settings.embedding_base_url or ""),
+        ),
+    )
+
+
+def probe_llm(llm: LLM) -> None:
+    """Make the smallest real chat call there is. Raises if the provider is unusable."""
+    from llama_index.core.base.llms.types import ChatMessage, MessageRole
+
+    llm.chat([ChatMessage(role=MessageRole.USER, content="ping")])
+
+
+def probe_embedding(embed_model: BaseEmbedding) -> None:
+    """Embed one short string for real. Raises if the provider is unusable."""
+    embed_model.get_query_embedding("ping")
+
+
 def build_embedding_model(settings: Settings) -> BaseEmbedding:
     """Construct the embedding client. The only place embedding credentials are used.
 
@@ -179,3 +251,30 @@ def build_llm(settings: Settings) -> LLM:
         api_key=settings.llm_api_key,
         api_base=settings.llm_base_url,
     )
+
+
+@dataclass
+class ProviderRegistry:
+    """The LLM and embedding clients currently in effect (ADR-10 amendment).
+
+    The only mutable provider state in the process. This holds the result of
+    `build_llm`/`build_embedding_model`, it does not construct anything itself —
+    `config.py` remains the sole place credentials are read and clients are built
+    (invariant 5). A caller must build and probe a replacement *before* calling
+    `replace_llm`/`replace_embedding`, so a client is only ever swapped in once it has
+    already proven reachable; a request already holding the previous client via
+    dependency injection simply finishes with it (no in-place mutation of the objects
+    themselves, only of which instance this registry hands out next).
+    """
+
+    settings: Settings
+    llm: LLM
+    embed_model: BaseEmbedding
+
+    def replace_llm(self, *, settings: Settings, llm: LLM) -> None:
+        self.settings = settings
+        self.llm = llm
+
+    def replace_embedding(self, *, settings: Settings, embed_model: BaseEmbedding) -> None:
+        self.settings = settings
+        self.embed_model = embed_model

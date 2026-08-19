@@ -150,6 +150,79 @@ class AnswerResponse(BaseModel):
         return self
 
 
+class ProviderSummary(BaseModel):
+    """One configured provider, safe to display. Mirrors `config.ProviderDescription`.
+
+    `masked_key` is never the credential itself — the API has no endpoint that returns
+    a usable secret, by construction. `base_url` carries no credential, so it is shown
+    in full rather than reduced to `host`, to pre-fill a runtime-edit form.
+    """
+
+    model: str = Field(min_length=1)
+    host: str
+    base_url: str
+    masked_key: str = Field(min_length=1)
+    is_local: bool
+
+
+class SettingsResponse(BaseModel):
+    """The provider configuration currently in effect.
+
+    Reflects the active runtime configuration (R-08): the environment/`.env` values
+    resolved at startup, unless overridden since by `POST /settings/llm` or
+    `POST /settings/embedding` (ADR-10's amendment) — this endpoint itself only reads
+    and reports whatever is currently active, it never changes anything.
+    """
+
+    llm: ProviderSummary
+    embedding: ProviderSummary
+
+
+class UpdateLlmSettingsRequest(BaseModel):
+    """A replacement LLM provider configuration, applied only after a live probe
+    succeeds (never persisted to `.env` — process-local until the app restarts).
+
+    `api_key` left blank keeps whichever credential is currently active; a real
+    secret never needs to round-trip back through the browser to be preserved.
+    """
+
+    api_key: str = ""
+    base_url: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class UpdateEmbeddingSettingsRequest(BaseModel):
+    """A replacement embedding provider configuration.
+
+    Applied only after a live probe succeeds *and* the change is confirmed safe
+    against any already-indexed documents (ADR-8) — see `ConnectionCheck`/`ErrorResponse`
+    for how a probe failure or an index conflict is reported instead. Never persisted to
+    `.env`. `api_key` left blank keeps the currently active credential.
+    """
+
+    api_key: str = ""
+    base_url: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class ConnectionCheck(BaseModel):
+    """Outcome of one real provider call. `detail` is set only when `ok` is false."""
+
+    ok: bool
+    detail: str | None = None
+
+
+class ConnectionTestResponse(BaseModel):
+    """Result of probing both configured providers.
+
+    Always 200: an unreachable provider is the answer to the question being asked, not
+    a failure of the request itself.
+    """
+
+    llm: ConnectionCheck
+    embedding: ConnectionCheck
+
+
 class ErrorResponse(BaseModel):
     """Structured envelope for a request-level error (e.g. 404 document not found).
 

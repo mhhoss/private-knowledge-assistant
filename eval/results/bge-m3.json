@@ -1,0 +1,368 @@
+{
+  "model_key": "bge-m3",
+  "hf_id": "BAAI/bge-m3",
+  "quality": {
+    "n_queries": 23,
+    "n_answerable": 19,
+    "n_out_of_corpus": 4,
+    "top1_accuracy": 1.0,
+    "recall_at_5": 1.0,
+    "accuracy_by_category": {
+      "cross_lingual": 1.0,
+      "same_language": 1.0
+    },
+    "mean_top1_score_answerable": 0.6179710203095486,
+    "min_top1_score_answerable": 0.4865654408931732,
+    "mean_top1_score_out_of_corpus": 0.4242449924349785,
+    "max_top1_score_out_of_corpus": 0.4622119069099426,
+    "separability_gap": 0.02435353398323059,
+    "per_query": [
+      {
+        "id": "q01",
+        "language": "en",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-en-pdf-solar-energy"
+        ],
+        "top1_score": 0.7041819095611572,
+        "top1_doc": "doc-en-pdf-solar-energy",
+        "top5_docs": [
+          "doc-en-pdf-solar-energy"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q02",
+        "language": "en",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-en-docx-compound-interest"
+        ],
+        "top1_score": 0.6733913421630859,
+        "top1_doc": "doc-en-docx-compound-interest",
+        "top5_docs": [
+          "doc-en-docx-compound-interest",
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q03",
+        "language": "en",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-en-pdf-solar-energy"
+        ],
+        "top1_score": 0.7028185129165649,
+        "top1_doc": "doc-en-pdf-solar-energy",
+        "top5_docs": [
+          "doc-en-pdf-solar-energy"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q04",
+        "language": "en",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-en-docx-compound-interest"
+        ],
+        "top1_score": 0.7034432291984558,
+        "top1_doc": "doc-en-docx-compound-interest",
+        "top5_docs": [
+          "doc-en-docx-compound-interest",
+          "doc-mixed-pdf-ai-fa"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q05",
+        "language": "fa",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_score": 0.6403470635414124,
+        "top1_doc": "doc-fa-pdf-coffee",
+        "top5_docs": [
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q06",
+        "language": "fa",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-fa-docx-bicycle"
+        ],
+        "top1_score": 0.6534693241119385,
+        "top1_doc": "doc-fa-docx-bicycle",
+        "top5_docs": [
+          "doc-fa-docx-bicycle"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q07",
+        "language": "fa",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_score": 0.6490220427513123,
+        "top1_doc": "doc-fa-pdf-coffee",
+        "top5_docs": [
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q08",
+        "language": "fa",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-fa-docx-bicycle"
+        ],
+        "top1_score": 0.6753721833229065,
+        "top1_doc": "doc-fa-docx-bicycle",
+        "top5_docs": [
+          "doc-fa-docx-bicycle"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q09",
+        "language": "fa",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-en-pdf-solar-energy"
+        ],
+        "top1_score": 0.7005053758621216,
+        "top1_doc": "doc-en-pdf-solar-energy",
+        "top5_docs": [
+          "doc-en-pdf-solar-energy"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q10",
+        "language": "en",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_score": 0.5985788106918335,
+        "top1_doc": "doc-fa-pdf-coffee",
+        "top5_docs": [
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q11",
+        "language": "fa",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-en-docx-compound-interest"
+        ],
+        "top1_score": 0.493247389793396,
+        "top1_doc": "doc-en-docx-compound-interest",
+        "top5_docs": [
+          "doc-en-docx-compound-interest",
+          "doc-en-pdf-solar-energy"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q12",
+        "language": "en",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-fa-docx-bicycle"
+        ],
+        "top1_score": 0.5486316084861755,
+        "top1_doc": "doc-fa-docx-bicycle",
+        "top5_docs": [
+          "doc-fa-docx-bicycle"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q13",
+        "language": "fa",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-mixed-pdf-ai-fa"
+        ],
+        "top1_score": 0.6008468866348267,
+        "top1_doc": "doc-mixed-pdf-ai-fa",
+        "top5_docs": [
+          "doc-mixed-pdf-ai-fa"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q14",
+        "language": "en",
+        "category": "same_language",
+        "expected_doc_ids": [
+          "doc-mixed-docx-persian-language-en"
+        ],
+        "top1_score": 0.6876389980316162,
+        "top1_doc": "doc-mixed-docx-persian-language-en",
+        "top5_docs": [
+          "doc-mixed-docx-persian-language-en"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q15",
+        "language": "en",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-mixed-pdf-ai-fa"
+        ],
+        "top1_score": 0.4865654408931732,
+        "top1_doc": "doc-mixed-pdf-ai-fa",
+        "top5_docs": [
+          "doc-mixed-pdf-ai-fa"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q16",
+        "language": "fa",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-mixed-docx-persian-language-en"
+        ],
+        "top1_score": 0.5179173350334167,
+        "top1_doc": "doc-mixed-docx-persian-language-en",
+        "top5_docs": [
+          "doc-mixed-docx-persian-language-en"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q17",
+        "language": "en",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-mixed-pdf-ai-fa"
+        ],
+        "top1_score": 0.5470387935638428,
+        "top1_doc": "doc-mixed-pdf-ai-fa",
+        "top5_docs": [
+          "doc-mixed-pdf-ai-fa"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q18",
+        "language": "fa",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-mixed-docx-persian-language-en"
+        ],
+        "top1_score": 0.5890534520149231,
+        "top1_doc": "doc-mixed-docx-persian-language-en",
+        "top5_docs": [
+          "doc-mixed-docx-persian-language-en"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q19",
+        "language": "en",
+        "category": "cross_lingual",
+        "expected_doc_ids": [
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_score": 0.5693796873092651,
+        "top1_doc": "doc-fa-pdf-coffee",
+        "top5_docs": [
+          "doc-fa-pdf-coffee"
+        ],
+        "top1_correct": true,
+        "recall_at_5": true
+      },
+      {
+        "id": "q20",
+        "language": "en",
+        "category": "out_of_corpus",
+        "expected_doc_ids": [],
+        "top1_score": 0.4622119069099426,
+        "top1_doc": "doc-fa-docx-bicycle",
+        "top5_docs": [
+          "doc-fa-docx-bicycle",
+          "doc-en-pdf-solar-energy"
+        ]
+      },
+      {
+        "id": "q21",
+        "language": "fa",
+        "category": "out_of_corpus",
+        "expected_doc_ids": [],
+        "top1_score": 0.4121449589729309,
+        "top1_doc": "doc-mixed-docx-persian-language-en",
+        "top5_docs": [
+          "doc-mixed-docx-persian-language-en",
+          "doc-mixed-pdf-ai-fa"
+        ]
+      },
+      {
+        "id": "q22",
+        "language": "en",
+        "category": "out_of_corpus",
+        "expected_doc_ids": [],
+        "top1_score": 0.3747446835041046,
+        "top1_doc": "doc-mixed-pdf-ai-fa",
+        "top5_docs": [
+          "doc-mixed-pdf-ai-fa",
+          "doc-en-docx-compound-interest"
+        ]
+      },
+      {
+        "id": "q23",
+        "language": "fa",
+        "category": "out_of_corpus",
+        "expected_doc_ids": [],
+        "top1_score": 0.4478784203529358,
+        "top1_doc": "doc-fa-pdf-coffee",
+        "top5_docs": [
+          "doc-fa-pdf-coffee",
+          "doc-mixed-docx-persian-language-en"
+        ]
+      }
+    ]
+  },
+  "performance": {
+    "n_chunks": 45,
+    "ingestion_wall_seconds": 117.22192878600003,
+    "ingestion_cpu_seconds": 434.937076428,
+    "ms_per_chunk_wall": 2604.931750800001,
+    "chunks_per_sec": 0.38388721688884553,
+    "n_queries": 23,
+    "query_wall_seconds": 2.717265374999897,
+    "ms_per_query_wall": 118.1419728260825
+  }
+}

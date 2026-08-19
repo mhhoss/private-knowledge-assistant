@@ -1,0 +1,189 @@
+{
+  "version": "1.0",
+  "corpus_manifest": "eval/corpus/manifest.json",
+  "notes": "Every query was authored by reading the actual extracted document text (see eval/README.md) and manually verifying the expected_doc_ids against that text. out_of_corpus queries were verified absent from all six documents by inspection.",
+  "queries": [
+    {
+      "id": "q01",
+      "query": "How much solar radiation does the Earth receive from the Sun?",
+      "language": "en",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-en-pdf-solar-energy"],
+      "note": "Answer: 174 petawatts at the upper atmosphere."
+    },
+    {
+      "id": "q02",
+      "query": "What is the compounding frequency in finance?",
+      "language": "en",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-en-docx-compound-interest"],
+      "note": "Answer: number of times per unit time the accumulated interest is capitalized."
+    },
+    {
+      "id": "q03",
+      "query": "What are active and passive solar techniques?",
+      "language": "en",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-en-pdf-solar-energy"]
+    },
+    {
+      "id": "q04",
+      "query": "What is the difference between simple interest and compound interest?",
+      "language": "en",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-en-docx-compound-interest"]
+    },
+    {
+      "id": "q05",
+      "query": "قهوه از کدام کشور بیشتر تولید می‌شود؟",
+      "language": "fa",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-fa-pdf-coffee"],
+      "note": "Which country produces the most coffee? Answer: Brazil, 35% of global production (2023)."
+    },
+    {
+      "id": "q06",
+      "query": "چه کسی مدل چوبی اولیه دوچرخه را ساخت؟",
+      "language": "fa",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-fa-docx-bicycle"],
+      "note": "Who built the early wooden bicycle model? Answer: Karl Drais, ~1820."
+    },
+    {
+      "id": "q07",
+      "query": "قهوه چگونه وارد زبان انگلیسی شد؟",
+      "language": "fa",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-fa-pdf-coffee"],
+      "note": "How did the word 'coffee' enter English? Answer: via Dutch 'koffie' from Ottoman Turkish 'kahve', from Arabic 'qahwah'."
+    },
+    {
+      "id": "q08",
+      "query": "دوچرخه‌های کوهستان برای چه نوع مسیرهایی طراحی شده‌اند؟",
+      "language": "fa",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-fa-docx-bicycle"],
+      "note": "What terrain are mountain bikes designed for? Answer: dirt/mountain trails, wide tires, 26/27.5/29-inch rims."
+    },
+    {
+      "id": "q09",
+      "query": "زمین چقدر انرژی خورشیدی از خورشید دریافت می‌کند؟",
+      "language": "fa",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-en-pdf-solar-energy"],
+      "note": "Persian query, English-only document. No shared surface tokens (Persian query does not contain 'petawatt' etc.)."
+    },
+    {
+      "id": "q10",
+      "query": "Where does coffee originate from according to historical evidence?",
+      "language": "en",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-fa-pdf-coffee"],
+      "note": "English query, Persian-only document. Answer in doc: Yemen / Red Sea region, 15th century."
+    },
+    {
+      "id": "q11",
+      "query": "بهره مرکب با بهره ساده چه تفاوتی دارد؟",
+      "language": "fa",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-en-docx-compound-interest"],
+      "note": "Persian query, English-only document."
+    },
+    {
+      "id": "q12",
+      "query": "Who built an early iron bicycle model in 1839?",
+      "language": "en",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-fa-docx-bicycle"],
+      "note": "English query, Persian-only document. Answer: Kirkpatrick MacMillan."
+    },
+    {
+      "id": "q13",
+      "query": "هوش مصنوعی در چه سالی به عنوان یک رشته آکادمیک شکل گرفت؟",
+      "language": "fa",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-mixed-pdf-ai-fa"],
+      "note": "Persian query on the Persian-dominant mixed document. Answer: 1956 (Dartmouth workshop)."
+    },
+    {
+      "id": "q14",
+      "query": "What script is used to write Persian in Iran and Afghanistan?",
+      "language": "en",
+      "category": "same_language",
+      "expected_doc_ids": ["doc-mixed-docx-persian-language-en"],
+      "note": "English query on the English-dominant mixed document. Answer: the Persian alphabet, a derivative of the Arabic script."
+    },
+    {
+      "id": "q15",
+      "query": "What is the Turing test used to determine?",
+      "language": "en",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-mixed-pdf-ai-fa"],
+      "note": "English query targeting the Persian-dominant mixed document (query language differs from the document's majority language)."
+    },
+    {
+      "id": "q16",
+      "query": "زبان فارسی به کدام شاخه از زبان‌های هندواروپایی تعلق دارد؟",
+      "language": "fa",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-mixed-docx-persian-language-en"],
+      "note": "Persian query targeting the English-dominant mixed document. Answer: Western Iranian branch of Indo-Iranian/Indo-European."
+    },
+    {
+      "id": "q17",
+      "query": "Who coined the term 'artificial intelligence'?",
+      "language": "en",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-mixed-pdf-ai-fa"],
+      "note": "English query targeting the Persian-dominant mixed document. Answer: John McCarthy. The document itself contains the English term 'artificial intelligence' inline, making this a partially-shared-surface-term case worth noting when interpreting scores."
+    },
+    {
+      "id": "q18",
+      "query": "فارسی در چه کشورهایی به صورت رسمی صحبت می‌شود؟",
+      "language": "fa",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-mixed-docx-persian-language-en"],
+      "note": "Persian query targeting the English-dominant mixed document. Answer: Iran, Afghanistan, Tajikistan."
+    },
+    {
+      "id": "q19",
+      "query": "How much did the global coffee industry's value reach by 2023?",
+      "language": "en",
+      "category": "cross_lingual",
+      "expected_doc_ids": ["doc-fa-pdf-coffee"],
+      "note": "English query, Persian-only document. Answer: $495.50 billion."
+    },
+    {
+      "id": "q20",
+      "query": "What are the health benefits of intermittent fasting?",
+      "language": "en",
+      "category": "out_of_corpus",
+      "expected_doc_ids": [],
+      "note": "Verified absent from all six documents."
+    },
+    {
+      "id": "q21",
+      "query": "بهترین روش‌های یادگیری زبان چینی چیست؟",
+      "language": "fa",
+      "category": "out_of_corpus",
+      "expected_doc_ids": [],
+      "note": "Best methods for learning Chinese. Verified absent from all six documents."
+    },
+    {
+      "id": "q22",
+      "query": "How does blockchain consensus work in proof of stake?",
+      "language": "en",
+      "category": "out_of_corpus",
+      "expected_doc_ids": [],
+      "note": "Verified absent from all six documents."
+    },
+    {
+      "id": "q23",
+      "query": "روش‌های پخت نان سنتی ایرانی کدام‌اند؟",
+      "language": "fa",
+      "category": "out_of_corpus",
+      "expected_doc_ids": [],
+      "note": "Traditional Iranian bread-baking methods. Verified absent from all six documents."
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+[
+  {
+    "doc_id": "doc-en-pdf-solar-energy",
+    "path": "/tmp/claude-1000/-run-media-mhhoss-0C2EFC0D2EFBED98-veign-workspace-private-knowledge-assistant/e6ed6c0b-e8cb-423d-8302-870e21c65451/scratchpad/eval_build2/doc-en-pdf-solar-energy.docx",
+    "source": "https://en.wikipedia.org/wiki/Solar_energy",
+    "revid": 1365391407,
+    "timestamp": "2026-07-22T03:02:18Z",
+    "sections_used": [
+      "(intro)",
+      "Potential",
+      "Thermal energy",
+      "Electricity production"
+    ],
+    "approx_chars": 5035,
+    "format": "pdf"
+  },
+  {
+    "doc_id": "doc-en-docx-compound-interest",
+    "path": "/tmp/claude-1000/-run-media-mhhoss-0C2EFC0D2EFBED98-veign-workspace-private-knowledge-assistant/e6ed6c0b-e8cb-423d-8302-870e21c65451/scratchpad/eval_build2/doc-en-docx-compound-interest.docx",
+    "source": "https://en.wikipedia.org/wiki/Compound_interest",
+    "revid": 1368634635,
+    "timestamp": "2026-08-10T05:38:55Z",
+    "sections_used": [
+      "(intro)",
+      "Compounding frequency",
+      "Annual equivalent rate",
+      "Examples"
+    ],
+    "approx_chars": 2757,
+    "format": "docx"
+  },
+  {
+    "doc_id": "doc-fa-pdf-coffee",
+    "path": "/tmp/claude-1000/-run-media-mhhoss-0C2EFC0D2EFBED98-veign-workspace-private-knowledge-assistant/e6ed6c0b-e8cb-423d-8302-870e21c65451/scratchpad/eval_build2/doc-fa-pdf-coffee.docx",
+    "source": "https://fa.wikipedia.org/wiki/قهوه",
+    "revid": 43961969,
+    "timestamp": "2026-07-09T10:38:20Z",
+    "sections_used": [
+      "(intro)",
+      "واژه‌شناسی",
+      "تاریخچه",
+      "زیست‌شناسی گیاه قهوه"
+    ],
+    "approx_chars": 5334,
+    "format": "pdf"
+  },
+  {
+    "doc_id": "doc-fa-docx-bicycle",
+    "path": "/tmp/claude-1000/-run-media-mhhoss-0C2EFC0D2EFBED98-veign-workspace-private-knowledge-assistant/e6ed6c0b-e8cb-423d-8302-870e21c65451/scratchpad/eval_build2/doc-fa-docx-bicycle.docx",
+    "source": "https://fa.wikipedia.org/wiki/دوچرخه",
+    "revid": 43920332,
+    "timestamp": "2026-06-30T11:51:53Z",
+    "sections_used": [
+      "(intro)",
+      "تاریخچه",
+      "انواع دوچرخه",
+      "مزایای استفاده از دوچرخه"
+    ],
+    "approx_chars": 5582,
+    "format": "docx"
+  },
+  {
+    "doc_id": "doc-mixed-pdf-ai-fa",
+    "path": "/tmp/claude-1000/-run-media-mhhoss-0C2EFC0D2EFBED98-veign-workspace-private-knowledge-assistant/e6ed6c0b-e8cb-423d-8302-870e21c65451/scratchpad/eval_build2/doc-mixed-pdf-ai-fa.docx",
+    "source": "https://fa.wikipedia.org/wiki/هوش_مصنوعی",
+    "revid": 44159492,
+    "timestamp": "2026-08-10T07:17:50Z",
+    "sections_used": [
+      "(intro)",
+      "اهداف",
+      "تاریخچه",
+      "آزمون تورینگ"
+    ],
+    "approx_chars": 7425,
+    "format": "pdf"
+  },
+  {
+    "doc_id": "doc-mixed-docx-persian-language-en",
+    "path": "/tmp/claude-1000/-run-media-mhhoss-0C2EFC0D2EFBED98-veign-workspace-private-knowledge-assistant/e6ed6c0b-e8cb-423d-8302-870e21c65451/scratchpad/eval_build2/doc-mixed-docx-persian-language-en.docx",
+    "source": "https://en.wikipedia.org/wiki/Persian_language",
+    "revid": 1369185898,
+    "timestamp": "2026-08-13T10:56:26Z",
+    "sections_used": [
+      "(intro)",
+      "Classification",
+      "Name",
+      "History"
+    ],
+    "approx_chars": 6391,
+    "format": "docx"
+  }
+]

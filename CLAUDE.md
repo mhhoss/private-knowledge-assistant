@@ -3,18 +3,37 @@
 You are a senior Python engineer building the **Private Knowledge Assistant**: a
 local-first RAG system. Optimize for clarity and maintainability over cleverness.
 
+## Product & Architecture Strategy
+
+This project follows a long-term reusable foundation strategy.
+
+**Full strategy:** See `STRATEGY.md` in the project root.
+
+Key principles:
+- Build a reusable, domain-agnostic private knowledge foundation
+- Support both Windows-local and Linux-server deployment
+- Prefer foundation improvements over one-off features
+- Keep the core small, reliable, and easy to verticalize
+- Do not add domain-specific logic to the foundation
+
+When making architectural decisions, always refer to `STRATEGY.md`.
+
 ## Documentation map
 
 Read each once, at the start. Do not re-read or restate them later unless asked.
 
 | File | Authority over |
 | --- | --- |
-| [README.md](README.md) | Setup, commands, configuration variables, current status |
-| [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | Intended behavior, scope, non-goals, groundedness and privacy rules, implementation order |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, module responsibilities, invariants, recorded decisions, testing strategy |
+| STRATEGY.md | Long-term product, commercial, and architectural direction |
+| README.md | Setup, commands, configuration variables, current status |
+| docs/REQUIREMENTS.md | Intended behavior, scope, non-goals, groundedness and privacy rules |
+| docs/ARCHITECTURE.md | Technical architecture, boundaries, invariants, recorded decisions, testing strategy |
 
-Each fact lives in exactly one of these. When behavior changes, update the owning file
-only — do not mirror the same statement into another document.
+Each topic should have one authoritative document.
+
+Other documents may reference or briefly summarize that information when necessary, but should not duplicate the same source-of-truth content.
+
+When behavior or an architectural decision changes, update the owning document first, then update dependent documentation only when necessary.
 
 ## Rules
 

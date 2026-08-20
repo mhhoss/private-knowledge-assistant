@@ -5,7 +5,9 @@ No test may reach a real provider or the project's `chroma_db/`.
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 import zlib
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -37,7 +39,13 @@ class StubEmbedding(BaseEmbedding):
 
     Script-agnostic by construction: it hashes whitespace-separated tokens, so Persian
     and English text are treated identically and equal text always yields equal vectors.
+
+    `delay_seconds` (default 0, no behavior change for existing tests) stands in for a
+    slow real backend — e.g. ADR-17's regression test proving `GET /documents` stays
+    responsive while a background ingestion job is mid-embedding.
     """
+
+    delay_seconds: float = 0.0
 
     @staticmethod
     def _vector(text: str) -> list[float]:
@@ -51,6 +59,8 @@ class StubEmbedding(BaseEmbedding):
         return [value / magnitude for value in buckets]
 
     def _get_text_embedding(self, text: str) -> list[float]:
+        if self.delay_seconds:
+            time.sleep(self.delay_seconds)
         return self._vector(text)
 
     def _get_query_embedding(self, query: str) -> list[float]:
@@ -132,3 +142,15 @@ def clean_settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def settings_kwargs(**overrides: Any) -> dict[str, Any]:
     """Settings kwargs that ignore any local `.env`."""
     return {"_env_file": None, **overrides}
+
+
+def log_fields(record: logging.LogRecord) -> dict[str, Any]:
+    """The structured fields `observability.log_event` attaches to a record.
+
+    `extra=` in the standard library sets attributes dynamically, so there is no typed
+    `LogRecord.fields` for a type checker to see — this is the one place that reads it
+    back, via `__dict__` rather than attribute access, so every test asserting on a
+    logged event's fields does so through one typed accessor instead of its own
+    `# type: ignore`.
+    """
+    return record.__dict__.get("fields", {})

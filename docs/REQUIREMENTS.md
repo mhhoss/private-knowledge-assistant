@@ -44,7 +44,7 @@ Each file in an upload is an independent unit of work with one outcome:
 | --- | --- |
 | `indexed` | Chunks embedded and persisted |
 | `already_indexed` | Identical content is already indexed; nothing was re-embedded |
-| `failed` | A reason the user can act on (unreadable file, no extractable text, provider error) |
+| `failed` | A reason the user can act on (unreadable file, no extractable text, corrupted/malformed extraction, provider error) |
 
 Rules: one file's failure never rolls back or blocks another file's success; a failed file
 leaves no chunks behind; a well-formed upload request succeeds even if every file fails —

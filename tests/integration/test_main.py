@@ -9,6 +9,8 @@ a startup failure (e.g. `EmbeddingMismatchError`) surfaces by raising out of `__
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import create_app
 from app.storage.vector_store import EmbeddingMismatchError, VectorStore
+from tests.conftest import log_fields
 from tests.pdf_fixtures import build_pdf
 
 # Real OpenAI-recognized model names: `build_embedding_model`/`build_llm` construct
@@ -104,6 +107,20 @@ class TestStartupBehavior:
 
         assert response.status_code == 200
         assert response.json() == {"documents": []}
+
+    def test_a_successful_startup_is_logged_with_masked_provider_config(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        app = create_app(settings=_settings(tmp_path / "chroma", llm_api_key="sk-secret-value"))
+
+        with caplog.at_level(logging.INFO, logger="app.main"), TestClient(app):
+            pass
+
+        record = next(r for r in caplog.records if r.name == "app.main")
+        assert record.getMessage() == "startup complete"
+        assert log_fields(record)["embedding_model"] == EMBEDDING_MODEL_A
+        # The raw key must never reach a log line, structured or otherwise.
+        assert "sk-secret-value" not in json.dumps(log_fields(record))
 
 
 class TestSharedDependencyLifecycle:
@@ -263,9 +280,14 @@ class TestExistingApiBehaviorUnchanged:
     """Smoke-checks that going through the real app/lifespan (rather than the bare
     router `test_routes.py` mounts) still produces the documented contracts."""
 
-    def test_ingestion_response_shape_is_unchanged(
+    def test_ingestion_job_shape_is_unchanged(
         self, tmp_path: Path, stub_providers: object
     ) -> None:
+        """`POST /documents` starts a background job (ADR-17); its own response is
+        the job's initial state, and the per-file outcome is read back from
+        `GET /documents/jobs/{job_id}` once the job (run via `BackgroundTasks`, which
+        `TestClient` runs to completion within the same request cycle) has finished.
+        """
         app = create_app(settings=_settings(tmp_path / "chroma"))
 
         with TestClient(app) as client:
@@ -273,9 +295,12 @@ class TestExistingApiBehaviorUnchanged:
                 "/documents",
                 files=[("files", ("report.pdf", build_pdf(["Some content."])))],
             )
+            assert response.status_code == 202
+            job_id = response.json()["job_id"]
+            job = client.get(f"/documents/jobs/{job_id}").json()
 
-        assert response.status_code == 200
-        result = response.json()["results"][0]
+        assert job["status"] == "completed"
+        result = job["files"][0]
         assert result["status"] == "indexed"
         assert result["filename"] == "report.pdf"
 

@@ -43,6 +43,49 @@ _SENTENCE_END = re.compile(r"(?<=[.!?\u061F\u061B\u2026])\s+")
 
 _PARAGRAPH_SEP = "\n\n"
 
+# Control, private-use, surrogate, and unassigned codepoints never occur in real
+# prose (English or Persian) in any meaningful density — their presence is the
+# signature of a PDF font mapping its glyphs to the wrong Unicode codepoints
+# (a broken/legacy CMap), not genuine content. `normalize_text` already strips the
+# legitimate invisible/bidi/mark characters that real extraction produces, so
+# anything from these categories that survives it is noise, not text.
+_NON_TEXT_CATEGORIES = frozenset({"Cc", "Co", "Cs", "Cn"})
+
+# Below this length, a few stray characters can swing the ratio on otherwise
+# harmless short chunks; above it, the ratio is a stable signal.
+_PATHOLOGICAL_MIN_LENGTH = 100
+
+# Calibrated against a real corpus of ~35 extracted PDFs (English, Persian, mixed;
+# clean and broken-font): per-chunk ratios for clean documents, including ones with
+# an occasional single mis-mapped glyph (e.g. one `\x07` standing in for a citation
+# character), top out at ~0.32%; documents from a genuinely broken font start at
+# ~1.6%. The threshold sits at the geometric midpoint of that gap, with >2x margin
+# on both sides.
+_PATHOLOGICAL_RATIO_THRESHOLD = 0.007
+
+
+class PathologicalTextError(RuntimeError):
+    """Extracted text is dominated by characters that never occur in real prose.
+
+    Embedding such text has been observed to make the embedding backend
+    pathologically slow (see ARCHITECTURE.md ADR-18); this is raised before any
+    chunk reaches the indexer so ingestion fails fast instead of hanging.
+    """
+
+
+def _non_text_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    non_text = sum(1 for char in text if unicodedata.category(char) in _NON_TEXT_CATEGORIES)
+    return non_text / len(text)
+
+
+def _is_pathological(text: str) -> bool:
+    return (
+        len(text) >= _PATHOLOGICAL_MIN_LENGTH
+        and _non_text_ratio(text) > _PATHOLOGICAL_RATIO_THRESHOLD
+    )
+
 
 @dataclass(frozen=True)
 class Chunk:
@@ -127,9 +170,20 @@ def process_document(
     """Turn one document's extracted text into source-attributed chunks.
 
     Returns an empty list when the document holds no extractable text; the caller
-    reports that as a failed file rather than indexing nothing (R-09).
+    reports that as a failed file rather than indexing nothing (R-09). Raises
+    `PathologicalTextError` if any chunk looks like a broken-font extraction rather
+    than genuine content, before the caller ever reaches the indexer.
     """
     normalized = normalize_text(raw_text)
+    pieces = chunk_text(normalized, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    if any(_is_pathological(piece) for piece in pieces):
+        raise PathologicalTextError(
+            f"Extracted text from {filename!r} looks corrupted (an abnormal share of "
+            "unreadable characters, typically from a PDF font that maps glyphs to the "
+            "wrong codepoints) rather than genuine content. Skipped to avoid an "
+            "extremely slow or hanging embedding request; try re-exporting the PDF "
+            "with a different tool."
+        )
     return [
         Chunk(
             document_id=document_id,
@@ -138,9 +192,7 @@ def process_document(
             chunk_id=f"{position:04d}",
             text=piece,
         )
-        for position, piece in enumerate(
-            chunk_text(normalized, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        )
+        for position, piece in enumerate(pieces)
     ]
 
 

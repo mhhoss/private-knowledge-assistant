@@ -72,6 +72,9 @@ class Settings(BaseSettings):
 
     api_base_url: str = "http://127.0.0.1:8000"
 
+    # Standard Python logging level names (DEBUG/INFO/WARNING/ERROR/CRITICAL).
+    log_level: str = "INFO"
+
     @model_validator(mode="after")
     def _resolve(self) -> Settings:
         if self.embedding_api_key is None:

@@ -20,10 +20,20 @@ instead.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from openai import APIError
 
 from app.config import (
@@ -37,13 +47,18 @@ from app.config import (
     probe_embedding,
     probe_llm,
 )
+from app.observability import log_event
 from app.rag import engine
 from app.rag.generator import Citation as DomainCitation
 from app.rag.generator import GeneratedAnswer
 from app.rag.indexer import IngestOutcome as DomainIngestOutcome
+from app.rag.jobs import IngestionJob as DomainIngestionJob
+from app.rag.jobs import JobStore, run_ingestion_job
 from app.schemas import api as schemas
 from app.storage.vector_store import DocumentSummary as DomainDocumentSummary
 from app.storage.vector_store import EmbeddingMismatchError, VectorStore
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from llama_index.core.base.embeddings.base import BaseEmbedding
@@ -71,6 +86,10 @@ def _get_settings(request: Request) -> Settings:
 
 def _get_vector_store(request: Request) -> VectorStore:
     return request.app.state.store
+
+
+def _get_job_store(request: Request) -> JobStore:
+    return request.app.state.job_store
 
 
 def _get_embed_model(request: Request) -> BaseEmbedding:
@@ -113,6 +132,27 @@ def _to_schema_citation(citation: DomainCitation) -> schemas.Citation:
     )
 
 
+def _to_schema_job(job: DomainIngestionJob) -> schemas.IngestionJobResponse:
+    return schemas.IngestionJobResponse(
+        job_id=job.job_id,
+        status=schemas.JobStatus(job.status.value),
+        total=job.total,
+        completed=job.completed_count,
+        current_filename=job.current_filename,
+        eta_seconds=job.eta_seconds,
+        files=[
+            schemas.JobFileProgress(
+                filename=f.filename,
+                status=schemas.JobFileStatus(f.status.value),
+                document_id=f.document_id,
+                chunk_count=f.chunk_count,
+                error=f.error,
+            )
+            for f in job.files
+        ],
+    )
+
+
 def _to_schema_provider(provider: ProviderDescription) -> schemas.ProviderSummary:
     return schemas.ProviderSummary(
         model=provider.model,
@@ -147,27 +187,81 @@ def _to_schema_answer(answer: GeneratedAnswer) -> schemas.AnswerResponse:
 # --- routes ---
 
 
-@router.post("/documents", response_model=schemas.IngestionResponse)
+@router.post(
+    "/documents",
+    response_model=schemas.IngestionJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def ingest_documents(
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     settings: Settings = Depends(_get_settings),
     store: VectorStore = Depends(_get_vector_store),
     embed_model: BaseEmbedding = Depends(_get_embed_model),
-) -> schemas.IngestionResponse:
-    """Upload and index one or more files (R-01, R-09).
+    job_store: JobStore = Depends(_get_job_store),
+) -> schemas.IngestionJobResponse:
+    """Start a background ingestion job for one or more files (R-01, R-09, ADR-17).
 
-    Always 200: a per-file failure is data in `results`, never a request-level error
-    (ADR-7) — a well-formed request can report every file as failed.
+    Returns immediately with the job's initial (`queued`) state — embedding runs in a
+    background thread via `rag.jobs.run_ingestion_job`, never inline in this request,
+    so the API stays responsive while it works. Poll `GET /documents/jobs/{job_id}`
+    for progress and, once `status` is `completed`, the same per-file
+    `indexed`/`already_indexed`/`failed` outcomes the old synchronous response carried
+    (ADR-7's per-file compensation and ADR-3's dedup are unchanged — only *when* the
+    caller learns the outcome changed, not what it is).
     """
     loaded = [((file.filename or "unnamed"), await file.read()) for file in files]
-    outcomes = engine.ingest_files(
+    job = job_store.create(filenames=[name for name, _ in loaded])
+    background_tasks.add_task(
+        run_ingestion_job,
+        job_store=job_store,
+        job_id=job.job_id,
         store=store,
         embed_model=embed_model,
         files=loaded,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
     )
-    return schemas.IngestionResponse(results=[_to_schema_outcome(o) for o in outcomes])
+    return _to_schema_job(job)
+
+
+@router.get("/documents/jobs/{job_id}", response_model=schemas.IngestionJobResponse)
+def get_ingestion_job(
+    job_id: str,
+    job_store: JobStore = Depends(_get_job_store),
+) -> schemas.IngestionJobResponse:
+    """Poll one ingestion job's progress and, once finished, its results (ADR-17).
+
+    404 if `job_id` is unknown — including after an API restart, since the job store
+    is in-memory only (see `rag/jobs.py`'s module docstring for why that is safe).
+    """
+    job = job_store.get(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404, detail=f"No ingestion job found with id {job_id!r}."
+        )
+    return _to_schema_job(job)
+
+
+@router.delete("/documents/jobs/{job_id}", response_model=schemas.IngestionJobResponse)
+def cancel_ingestion_job(
+    job_id: str,
+    job_store: JobStore = Depends(_get_job_store),
+) -> schemas.IngestionJobResponse:
+    """Request cancellation of a job's not-yet-started files (ADR-17).
+
+    Idempotent and best-effort: a file already mid-embedding always finishes normally
+    (`run_ingestion_job` only checks this before starting the *next* file), and
+    requesting cancellation on an already-completed or unknown job is a 404, not an
+    error to retry differently.
+    """
+    job = job_store.get(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404, detail=f"No ingestion job found with id {job_id!r}."
+        )
+    job_store.request_cancel(job_id)
+    return _to_schema_job(job_store.get(job_id) or job)
 
 
 @router.get("/documents", response_model=schemas.DocumentListResponse)
@@ -231,6 +325,13 @@ def query(
             min_score=settings.retrieval_min_score,
         )
     except APIError as error:
+        log_event(
+            logger,
+            logging.WARNING,
+            "provider request failed",
+            route="/query",
+            error_type=type(error).__name__,
+        )
         raise HTTPException(
             status_code=502,
             detail="The configured LLM/embedding provider could not be reached. "

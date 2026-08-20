@@ -14,6 +14,7 @@ module exists to own the lifecycle).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
@@ -25,16 +26,22 @@ from app.config import (
     Settings,
     build_embedding_model,
     build_llm,
+    describe_providers,
     get_settings,
     require_credentials,
 )
+from app.observability import configure_logging, log_event
+from app.rag.jobs import JobStore
 from app.storage.vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 def _lifespan_for(settings_factory: Callable[[], Settings]):
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings = settings_factory()
+        configure_logging(settings.log_level)
         embed_model = build_embedding_model(settings)
         llm = build_llm(settings)
         # The only mutable provider state in the process (ADR-10's amendment): routes
@@ -53,6 +60,20 @@ def _lifespan_for(settings_factory: Callable[[], Settings]):
             path=settings.chroma_path,
             collection_name=settings.chroma_collection,
             embedding_fingerprint=settings.embedding_fingerprint,
+        )
+        # In-memory background-ingestion job registry (ADR-17). One per process,
+        # never persisted or rebuilt at runtime — the same lifecycle as `store` above.
+        app.state.job_store = JobStore()
+        llm_provider, embedding_provider = describe_providers(settings)
+        log_event(
+            logger,
+            logging.INFO,
+            "startup complete",
+            llm_model=llm_provider.model,
+            llm_host=llm_provider.host,
+            embedding_model=embedding_provider.model,
+            embedding_host=embedding_provider.host,
+            embedding_is_local=embedding_provider.is_local,
         )
         yield
 

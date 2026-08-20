@@ -16,23 +16,26 @@ are both supported.
 **Feature-complete for v1.** Unit/integration tested end to end, including real
 PDF/DOCX fixtures and English/Persian/mixed-language content throughout: `app/config.py`,
 `app/storage/vector_store.py`, `app/documents/loader.py`, `app/documents/parser.py`,
-`app/documents/processor.py`, `app/rag/indexer.py`, `app/rag/retriever.py`,
-`app/rag/generator.py`, `app/rag/engine.py`, `app/schemas/api.py`, `app/api/routes.py`,
-`app/main.py`, `streamlit_app.py`.
+`app/documents/processor.py`, `app/rag/indexer.py`, `app/rag/jobs.py`,
+`app/rag/retriever.py`, `app/rag/generator.py`, `app/rag/engine.py`, `app/schemas/api.py`,
+`app/api/routes.py`, `app/main.py`, `streamlit_app.py`.
 
 `app/main.py` builds settings, the embedding client, the LLM client, and the
 `VectorStore` once at startup (ADR-10) and wires `app/api/routes.py`'s endpoints
-(`POST`/`GET /documents`, `DELETE /documents/{document_id}`, `POST /reset`,
-`POST /query`) onto them. `streamlit_app.py` is a thin HTTP client of that API (ADR-1):
-upload and manage documents, ask questions, and see grounded answers or refusals with
-their citations. Both run commands below start.
+(`POST /documents` starts a background ingestion job and returns immediately;
+`GET /documents/jobs/{job_id}` polls its progress/results and `DELETE` on the same path
+cancels its not-yet-started files — ADR-17; also `GET /documents`,
+`DELETE /documents/{document_id}`, `POST /reset`, `POST /query`) onto them.
+`streamlit_app.py` is a thin HTTP client of that API (ADR-1): upload and manage
+documents, ask questions, and see grounded answers or refusals with their citations.
+Both run commands below start.
 
 Implementation order and the definition of done are in
 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
 
 ## Stack
 
-Python ≥ 3.11 · `uv` · FastAPI · Streamlit · LlamaIndex · Chroma (persistent) ·
+Python 3.14 · `uv` · FastAPI · Streamlit · LlamaIndex · Chroma (persistent) ·
 poppler (`pdftotext`) · python-docx · pydantic-settings
 
 ## Setup
@@ -171,6 +174,7 @@ embeddings; embedding settings fall back to the LLM settings when omitted.
 | `CHUNK_SIZE`, `CHUNK_OVERLAP` | Chunking |
 | `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE` | Retrieval breadth and the groundedness cutoff |
 | `API_BASE_URL` | Where the Streamlit UI reaches the API |
+| `LOG_LEVEL` | API log verbosity (DEBUG/INFO/WARNING/ERROR/CRITICAL) |
 
 `CHUNK_SIZE` and `CHUNK_OVERLAP` are character counts, not tokens. The embedding model
 must support both English and Persian, and changing it invalidates an existing index —
@@ -217,6 +221,16 @@ almost entirely on where the embedding model runs:
 
 Whichever backend you choose, `EMBEDDING_MODEL` must support both English and Persian,
 and changing it later requires resetting the knowledge base (see above).
+
+### Logging
+
+The API (not the Streamlit UI) emits one structured JSON line per event to stdout:
+a document ingested (status, chunk count, and — on failure — the same error message
+already shown to the user), a query answered (latency, retrieved-chunk count and score
+range, whether it was a refusal), and a provider request that failed. `LOG_LEVEL`
+controls verbosity; the default (`INFO`) covers all of the above. Log lines never
+contain document text, query text, answer text, or credentials — only identifiers,
+counts, statuses, and timings.
 
 ## Performance / Scale
 

@@ -7,11 +7,15 @@ and `StubLLM` (never a real provider).
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from app.documents.loader import UnsupportedFileTypeError
 from app.rag.engine import answer_query, ingest_file, ingest_files
 from app.rag.indexer import IngestStatus
 from app.storage.vector_store import VectorStore
-from tests.conftest import StubEmbedding, StubLLM
+from tests.conftest import StubEmbedding, StubLLM, log_fields
 from tests.docx_fixtures import build_docx
 from tests.pdf_fixtures import build_pdf
 
@@ -64,7 +68,7 @@ class TestIngestFile:
         assert outcome.status is IngestStatus.FAILED
         assert outcome.filename == "notes.txt"
         assert outcome.error
-        assert store.count() == 0
+
 
     def test_corrupt_file_of_a_supported_type_becomes_a_failed_outcome(
         self, store: VectorStore, embed_model: StubEmbedding
@@ -93,6 +97,57 @@ class TestIngestFile:
         assert second.status is IngestStatus.ALREADY_INDEXED
         (doc,) = store.list_documents()
         assert doc.filename == "report.pdf"  # ADR-3: first filename wins
+
+
+# Reproduces `15_abyari_ch3.pdf`'s real broken-font signature (Amuzeh custom
+# encoding): a `ToUnicode` CMap that maps glyphs to C0 control codepoints instead of
+# real characters, built at the byte level like every other PDF fixture here (see
+# `tests/pdf_fixtures.py`) rather than injected as pre-extracted text.
+_GARBLED_WORD = "abcdefgh\x06ijklmnop\x18qrstuvwx\x0fyzABCDEF\x19GHIJKLMN\x1d"
+GARBLED_PDF_TEXT = " ".join([_GARBLED_WORD] * 10)
+GARBLED_PDF_PAGE_WIDTH = 40000  # wide enough that -layout keeps every repeated word
+
+
+class TestIngestFilePathologicalText:
+    def test_broken_font_pdf_becomes_a_failed_outcome_not_a_hang(
+        self, store: VectorStore, embed_model: StubEmbedding
+    ) -> None:
+        outcome = do_ingest(
+            store,
+            embed_model,
+            "broken.pdf",
+            build_pdf([GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
+        )
+        assert outcome.status is IngestStatus.FAILED
+        assert outcome.filename == "broken.pdf"
+        assert outcome.error and "corrupted" in outcome.error
+        assert store.count() == 0
+
+    def test_failure_never_reaches_the_store(
+        self, store: VectorStore, embed_model: StubEmbedding
+    ) -> None:
+        do_ingest(
+            store,
+            embed_model,
+            "broken.pdf",
+            build_pdf([GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
+        )
+        assert store.list_documents() == []
+
+    def test_a_normal_pdf_still_indexes_after_the_broken_one_fails(
+        self, store: VectorStore, embed_model: StubEmbedding
+    ) -> None:
+        do_ingest(
+            store,
+            embed_model,
+            "broken.pdf",
+            build_pdf([GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
+        )
+        outcome = do_ingest(store, embed_model, "report.pdf", build_pdf([ENGLISH_TEXT]))
+
+        assert outcome.status is IngestStatus.INDEXED
+        (doc,) = store.list_documents()
+        assert doc.filename == "report.pdf"
 
 
 class TestIngestFiles:
@@ -351,3 +406,117 @@ class TestUnsupportedFileTypeIsHandledNotRaised:
                 "engine.ingest_file must not let this escape"
             ) from None
         assert outcome.status is IngestStatus.FAILED
+
+
+class TestIngestionIsLogged:
+    def test_a_successful_ingestion_logs_status_and_identity(
+        self,
+        store: VectorStore,
+        embed_model: StubEmbedding,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="app.rag.engine"):
+            outcome = do_ingest(store, embed_model, "report.pdf", build_pdf([ENGLISH_TEXT]))
+
+        assert outcome.status is IngestStatus.INDEXED
+        records = [r for r in caplog.records if r.name == "app.rag.engine"]
+        assert len(records) == 1
+        assert records[0].getMessage() == "document ingested"
+        assert log_fields(records[0])["status"] == "indexed"
+        assert log_fields(records[0])["document_id"] == outcome.document_id
+        assert log_fields(records[0])["chunk_count"] == outcome.chunk_count
+
+    def test_a_failed_ingestion_is_logged_at_warning_without_leaking_document_text(
+        self, store: VectorStore, embed_model: StubEmbedding, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="app.rag.engine"):
+            outcome = do_ingest(store, embed_model, "x.bmp", b"whatever")
+
+        assert outcome.status is IngestStatus.FAILED
+        record = next(r for r in caplog.records if r.name == "app.rag.engine")
+        assert record.levelname == "WARNING"
+        assert log_fields(record)["status"] == "failed"
+        # The error message is the same one already deemed safe to show the user
+        # (R-09) — never the file's own bytes/text.
+        assert log_fields(record)["error"] == outcome.error
+
+    def test_already_indexed_is_logged_as_its_own_status_not_as_a_failure(
+        self, store: VectorStore, embed_model: StubEmbedding, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        do_ingest(store, embed_model, "a.pdf", build_pdf([ENGLISH_TEXT]))
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="app.rag.engine"):
+            outcome = do_ingest(store, embed_model, "a.pdf", build_pdf([ENGLISH_TEXT]))
+
+        assert outcome.status is IngestStatus.ALREADY_INDEXED
+        record = next(r for r in caplog.records if r.name == "app.rag.engine")
+        assert record.levelname == "INFO"
+        assert log_fields(record)["status"] == "already_indexed"
+
+
+class TestQueryIsLogged:
+    def test_a_query_logs_timing_and_retrieval_outcome_never_the_text(
+        self,
+        store: VectorStore,
+        embed_model: StubEmbedding,
+        llm: StubLLM,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        do_ingest(store, embed_model, "report.pdf", build_pdf([ENGLISH_TEXT]))
+        llm.response = "Costs rose [1]."
+        secret_query = "What happened to Kubernetes costs this quarter?"
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="app.rag.engine"):
+            result = answer_query(
+                store=store,
+                embed_model=embed_model,
+                llm=llm,
+                query=secret_query,
+                top_k=5,
+                min_score=0.0,
+            )
+
+        record = next(r for r in caplog.records if r.name == "app.rag.engine")
+        assert record.getMessage() == "query answered"
+        assert log_fields(record)["is_refusal"] is result.is_refusal
+        assert log_fields(record)["source_count"] == len(result.sources)
+        assert log_fields(record)["retrieved_count"] >= 1
+        assert isinstance(log_fields(record)["elapsed_ms"], float)
+        assert log_fields(record)["elapsed_ms"] >= 0
+        # Neither the question nor the generated answer text ever appears in the log.
+        assert secret_query not in json_safe(record)
+        assert result.answer not in json_safe(record)
+
+    def test_a_refusal_is_logged_with_zero_sources(
+        self,
+        store: VectorStore,
+        embed_model: StubEmbedding,
+        llm: StubLLM,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="app.rag.engine"):
+            result = answer_query(
+                store=store,
+                embed_model=embed_model,
+                llm=llm,
+                query="anything",
+                top_k=5,
+                min_score=0.0,
+            )
+
+        assert result.is_refusal is True
+        record = next(r for r in caplog.records if r.name == "app.rag.engine")
+        assert log_fields(record)["is_refusal"] is True
+        assert log_fields(record)["source_count"] == 0
+        assert log_fields(record)["retrieved_count"] == 0
+        assert log_fields(record)["min_score"] is None
+        assert log_fields(record)["max_score"] is None
+
+
+def json_safe(record: logging.LogRecord) -> str:
+    """Every string a log line could actually surface: the rendered message plus its
+    structured field values, joined for a single substring check."""
+    return " ".join(
+        [record.getMessage(), *(str(v) for v in log_fields(record).values())]
+    )

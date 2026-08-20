@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.documents.processor import (
     Chunk,
+    PathologicalTextError,
     chunk_text,
     normalize_text,
     process_document,
@@ -192,3 +195,90 @@ class TestProcessDocument:
             text="t",
         )
         assert chunk.node_id == "d-0000"
+
+
+# Reproduces the real signature found in a broken-font Persian PDF
+# (`15_abyari_ch3.pdf`, Amuzeh custom-encoded font): glyph-like Latin-range letters
+# interleaved with C0 control codepoints (\x06, \x07, \x0f, \x18, \x19) that a correct
+# CMap would never emit into extracted text.
+_GARBLED_UNIT = "È«ÅÁdD\x06 È—UOÐ¬\x18 vð—UN\x0f t ULOÄ\x19 "
+GARBLED_TEXT = _GARBLED_UNIT * 20  # long enough to clear the length floor
+
+# A real academic PDF (`medical/02_..._questionnaire.pdf`) has occasional single
+# mis-mapped glyphs (about one `\x07` per thousand characters) in otherwise clean,
+# useful text; this must never be rejected. Only the first repeat carries the
+# glitch, so the ratio over a realistic (chunk_size=1024) chunk stays near that
+# real-world density instead of being amplified by a short test string.
+MOSTLY_CLEAN_WITH_ONE_GLYPH_GLITCH = (
+    "Klaassen JM, Bardach SH, Wu J, Nguyen K, Bates DW. MAUQ \x07mHealth App "
+    "Usability Questionnaire\x07 validation study, Gen Intern Med reference list "
+    "citation for the mobile health usability instrument used across three trials. "
+)
+MOSTLY_CLEAN_FILLER = (
+    "The quarterly infrastructure report covers cluster costs and staffing plans. "
+)
+
+
+class TestPathologicalTextDetection:
+    def test_broken_font_extraction_is_rejected(self) -> None:
+        with pytest.raises(PathologicalTextError, match="corrupted"):
+            process_document(
+                document_id="d",
+                filename="broken.pdf",
+                file_type="pdf",
+                raw_text=GARBLED_TEXT,
+                chunk_size=200,
+                chunk_overlap=0,
+            )
+
+    def test_occasional_mis_mapped_glyph_in_clean_text_is_not_rejected(self) -> None:
+        raw_text = MOSTLY_CLEAN_WITH_ONE_GLYPH_GLITCH + MOSTLY_CLEAN_FILLER * 12
+        chunks = process_document(
+            document_id="d",
+            filename="clean.pdf",
+            file_type="pdf",
+            raw_text=raw_text,
+            chunk_size=1024,
+            chunk_overlap=0,
+        )
+        assert chunks
+        assert sum(len(chunk.text) for chunk in chunks) > len(raw_text) * 0.9
+
+    def test_short_garbled_text_below_the_length_floor_is_not_rejected(self) -> None:
+        chunks = process_document(
+            document_id="d",
+            filename="tiny.pdf",
+            file_type="pdf",
+            raw_text=_GARBLED_UNIT,
+            chunk_size=200,
+            chunk_overlap=0,
+        )
+        assert chunks
+
+    def test_clean_persian_text_of_normal_length_is_not_rejected(self) -> None:
+        chunks = process_document(
+            document_id="d",
+            filename="سند.pdf",
+            file_type="pdf",
+            raw_text=" ".join([PERSIAN_SENTENCES] * 30),
+            chunk_size=200,
+            chunk_overlap=20,
+        )
+        assert chunks
+
+    def test_rejected_document_never_reaches_indexing(self) -> None:
+        """No chunk is returned at all - the caller cannot partially index a
+        pathological document (invariant 8)."""
+        try:
+            process_document(
+                document_id="d",
+                filename="broken.pdf",
+                file_type="pdf",
+                raw_text=GARBLED_TEXT,
+                chunk_size=200,
+                chunk_overlap=0,
+            )
+        except PathologicalTextError:
+            pass
+        else:
+            pytest.fail("expected PathologicalTextError")

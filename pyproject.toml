@@ -2,7 +2,7 @@
 name = "private-knowledge-assistant"
 version = "0.1.0"
 description = "Private Knowledge Assistant - RAG based Document Q&A"
-requires-python = ">=3.11"
+requires-python = "==3.14.*"
 dependencies = [
     "chromadb>=1.5.9",
     "fastapi>=0.141.1",

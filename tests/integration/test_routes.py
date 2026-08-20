@@ -9,6 +9,9 @@ or `chroma_db/`. `app/main.py` does not exist yet, so each test builds its own m
 from __future__ import annotations
 
 import json
+import logging
+import threading
+import time
 
 import httpx
 import pytest
@@ -20,8 +23,15 @@ from app.api import routes
 from app.config import ProviderRegistry, Settings
 from app.documents.processor import process_document
 from app.rag.indexer import index_document
+from app.rag.jobs import JobStore
 from app.storage.vector_store import VectorStore
-from tests.conftest import STUB_FINGERPRINT, StubEmbedding, StubLLM, settings_kwargs
+from tests.conftest import (
+    STUB_FINGERPRINT,
+    StubEmbedding,
+    StubLLM,
+    log_fields,
+    settings_kwargs,
+)
 from tests.docx_fixtures import build_docx
 from tests.pdf_fixtures import build_pdf
 
@@ -52,6 +62,8 @@ def app(store: VectorStore, embed_model: StubEmbedding, llm: StubLLM) -> FastAPI
     application.dependency_overrides[routes._get_vector_store] = lambda: store
     application.dependency_overrides[routes._get_embed_model] = lambda: embed_model
     application.dependency_overrides[routes._get_llm] = lambda: llm
+    job_store = JobStore()
+    application.dependency_overrides[routes._get_job_store] = lambda: job_store
     return application
 
 
@@ -61,20 +73,48 @@ def client(app: FastAPI) -> TestClient:
 
 
 def upload(client: TestClient, files: list[tuple[str, bytes]]) -> httpx.Response:
+    """POST /documents (ADR-17): starts a background ingestion job and returns its
+    initial `202` response — `job_id`/`status`, not yet the per-file results."""
     return client.post(
         "/documents",
         files=[("files", (name, content)) for name, content in files],
     )
 
 
+def upload_and_finish(client: TestClient, files: list[tuple[str, bytes]]) -> dict:
+    """Upload and return the job's finished state.
+
+    `TestClient` runs the whole ASGI cycle for a request in-process, including its
+    `BackgroundTasks` (the same behavior FastAPI's own docs rely on to test background
+    tasks synchronously) — so by the time `upload()` returns, `run_ingestion_job` has
+    already completed, and one immediate poll already reports the finished job. This
+    only exists to keep call sites terse; nothing here is a real timing dependency.
+    """
+    job_id = upload(client, files).json()["job_id"]
+    return client.get(f"/documents/jobs/{job_id}").json()
+
+
 class TestIngestDocuments:
-    def test_single_file_ingestion(self, client: TestClient) -> None:
+    def test_upload_returns_202_with_the_jobs_initial_state(
+        self, client: TestClient
+    ) -> None:
+        """POST /documents starts a job and returns immediately (ADR-17) — it does
+        not wait for embedding, so its own response never carries a final outcome."""
         response = upload(client, [("report.pdf", build_pdf([ENGLISH_TEXT]))])
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
-        assert len(body["results"]) == 1
-        result = body["results"][0]
+        assert body["job_id"]
+        assert body["total"] == 1
+        assert body["files"][0]["filename"] == "report.pdf"
+        assert body["files"][0]["status"] == "queued"
+
+    def test_single_file_ingestion(self, client: TestClient) -> None:
+        job = upload_and_finish(client, [("report.pdf", build_pdf([ENGLISH_TEXT]))])
+
+        assert job["status"] == "completed"
+        assert len(job["files"]) == 1
+        result = job["files"][0]
         assert result["filename"] == "report.pdf"
         assert result["status"] == "indexed"
         assert result["chunk_count"] > 0
@@ -84,7 +124,7 @@ class TestIngestDocuments:
     def test_multi_file_ingestion_with_partial_failure(
         self, client: TestClient
     ) -> None:
-        response = upload(
+        job = upload_and_finish(
             client,
             [
                 ("a.pdf", build_pdf(["Alpha document."])),
@@ -93,8 +133,7 @@ class TestIngestDocuments:
             ],
         )
 
-        assert response.status_code == 200
-        by_name = {r["filename"]: r for r in response.json()["results"]}
+        by_name = {r["filename"]: r for r in job["files"]}
         assert by_name["a.pdf"]["status"] == "indexed"
         assert by_name["notes.txt"]["status"] == "failed"
         assert by_name["notes.txt"]["error"]
@@ -104,33 +143,90 @@ class TestIngestDocuments:
     def test_unsupported_extension_is_a_failed_result_not_an_http_error(
         self, client: TestClient
     ) -> None:
-        response = upload(client, [("notes.txt", b"plain text")])
+        job = upload_and_finish(client, [("notes.txt", b"plain text")])
 
-        assert response.status_code == 200
-        result = response.json()["results"][0]
+        result = job["files"][0]
         assert result["status"] == "failed"
         assert result["error"]
 
     def test_corrupt_file_of_a_supported_type_is_a_failed_result(
         self, client: TestClient
     ) -> None:
-        response = upload(client, [("broken.pdf", b"not a real pdf")])
+        job = upload_and_finish(client, [("broken.pdf", b"not a real pdf")])
 
-        assert response.status_code == 200
-        result = response.json()["results"][0]
+        result = job["files"][0]
         assert result["status"] == "failed"
 
-    def test_a_request_where_every_file_fails_is_still_200(
+    def test_a_request_where_every_file_fails_is_still_202_and_completes(
         self, client: TestClient
     ) -> None:
-        response = upload(
+        job = upload_and_finish(
             client,
             [("a.txt", b"x"), ("b.txt", b"y")],
         )
 
-        assert response.status_code == 200
-        statuses = {r["status"] for r in response.json()["results"]}
+        statuses = {r["status"] for r in job["files"]}
         assert statuses == {"failed"}
+
+    def test_unknown_job_id_is_a_404(self, client: TestClient) -> None:
+        response = client.get("/documents/jobs/does-not-exist")
+        assert response.status_code == 404
+
+    def test_cancel_requested_after_completion_still_reports_the_finished_job(
+        self, client: TestClient
+    ) -> None:
+        """Cancelling a job that already finished is a no-op, not an error — the
+        finished result stands (`JobStore.request_cancel` only affects not-yet-started
+        files, and there are none left once `status` is `completed`)."""
+        job_id = upload(client, [("report.pdf", build_pdf([ENGLISH_TEXT]))]).json()[
+            "job_id"
+        ]
+
+        response = client.delete(f"/documents/jobs/{job_id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["files"][0]["status"] == "indexed"
+
+    def test_cancel_on_unknown_job_id_is_a_404(self, client: TestClient) -> None:
+        response = client.delete("/documents/jobs/does-not-exist")
+        assert response.status_code == 404
+
+
+class TestApiStaysResponsiveDuringIngestion:
+    """Regression test for the bug ADR-17 fixes: a slow embedding call used to block
+    the entire single-worker API — `GET /documents` would hang behind an in-flight
+    `POST /documents` even though it touches no embedding model at all. `StubEmbedding`
+    stands in for the real, slow CPU-bound backend via `delay_seconds`."""
+
+    def test_get_documents_returns_promptly_while_a_job_is_mid_embedding(
+        self, client: TestClient, embed_model: StubEmbedding
+    ) -> None:
+        embed_model.delay_seconds = 2.0
+
+        upload_response: dict[str, httpx.Response] = {}
+
+        def do_upload() -> None:
+            upload_response["response"] = upload(
+                client, [("slow.pdf", build_pdf(["Some slow content."]))]
+            )
+
+        thread = threading.Thread(target=do_upload)
+        thread.start()
+        time.sleep(0.3)  # let the background job actually start embedding
+
+        started = time.monotonic()
+        response = client.get("/documents")
+        elapsed = time.monotonic() - started
+
+        thread.join(timeout=10)
+
+        assert upload_response["response"].status_code == 202
+        assert response.status_code == 200
+        # Far under the 2s embedding delay: proof `GET /documents` was never queued
+        # behind it, not just that it eventually returned.
+        assert elapsed < 1.0
 
 
 class TestListDocuments:
@@ -155,10 +251,8 @@ class TestListDocuments:
 
 class TestDeleteDocument:
     def test_deletes_an_existing_document(self, client: TestClient) -> None:
-        ingested = upload(client, [("report.pdf", build_pdf([ENGLISH_TEXT]))]).json()[
-            "results"
-        ][0]
-        document_id = ingested["document_id"]
+        job = upload_and_finish(client, [("report.pdf", build_pdf([ENGLISH_TEXT]))])
+        document_id = job["files"][0]["document_id"]
 
         response = client.delete(f"/documents/{document_id}")
 
@@ -252,6 +346,24 @@ class TestQuery:
         assert response.status_code == 502
         assert response.json()["detail"]
 
+    def test_provider_failure_is_logged(
+        self, client: TestClient, llm: StubLLM, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        upload(client, [("report.pdf", build_pdf([ENGLISH_TEXT]))])
+        llm.error = APIConnectionError(
+            request=httpx.Request("POST", "https://example.invalid")
+        )
+
+        with caplog.at_level(logging.WARNING, logger="app.api.routes"):
+            client.post(
+                "/query", json={"query": "How did Kubernetes cluster costs change?"}
+            )
+
+        record = next(r for r in caplog.records if r.name == "app.api.routes")
+        assert record.getMessage() == "provider request failed"
+        assert record.levelname == "WARNING"
+        assert log_fields(record)["route"] == "/query"
+
     def test_persian_query_against_persian_document(
         self, client: TestClient, llm: StubLLM
     ) -> None:
@@ -269,12 +381,21 @@ class TestQuery:
 
 
 class TestResponseSchemas:
-    def test_ingestion_response_matches_schema_exactly(
+    def test_ingestion_job_response_matches_schema_exactly(
         self, client: TestClient
     ) -> None:
         response = upload(client, [("a.pdf", build_pdf(["Some text."]))])
-        result = response.json()["results"][0]
-        assert set(result.keys()) == {
+        body = response.json()
+        assert set(body.keys()) == {
+            "job_id",
+            "status",
+            "total",
+            "completed",
+            "current_filename",
+            "eta_seconds",
+            "files",
+        }
+        assert set(body["files"][0].keys()) == {
             "filename",
             "status",
             "document_id",

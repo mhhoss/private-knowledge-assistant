@@ -26,10 +26,10 @@ import streamlit.components.v1 as components
 from app.config import get_settings
 
 _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
-# Ingestion of a large document can take minutes at a slow (e.g. local CPU) embedding
-# rate (see ARCHITECTURE.md ADR-13) — a short timeout here would report a false
-# failure in the UI while the API keeps indexing in the background regardless.
-_INGEST_TIMEOUT = httpx.Timeout(600.0, connect=10.0)
+# Ingestion itself now runs as a background job (ADR-17): `POST /documents` and
+# `GET .../jobs/{id}` both return almost immediately regardless of how long embedding
+# takes, so they need no timeout longer than any other call — unlike the old
+# synchronous upload this constant used to cover.
 # A provider probe makes a real call and retries internally before giving up.
 _PROBE_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
 
@@ -56,15 +56,29 @@ class ApiClient:
     def close(self) -> None:
         self._client.close()
 
-    def ingest_files(self, files: list[tuple[str, bytes]]) -> list[dict]:
-        """Upload files (R-01) and return their per-file outcomes (R-09)."""
-        response = self._request(
+    def start_ingestion(self, files: list[tuple[str, bytes]]) -> dict:
+        """Start a background ingestion job for these files (R-01, ADR-17).
+
+        Returns the job's initial (`queued`) state immediately; poll
+        `get_ingestion_job` for progress and final per-file outcomes (R-09).
+        """
+        return self._request(
             "POST",
             "/documents",
             files=[("files", (name, content)) for name, content in files],
-            timeout=_INGEST_TIMEOUT,
-        )
-        return response.json()["results"]
+        ).json()
+
+    def get_ingestion_job(self, job_id: str) -> dict:
+        """Poll one ingestion job's progress and, once finished, its results (ADR-17)."""
+        return self._request("GET", f"/documents/jobs/{job_id}").json()
+
+    def cancel_ingestion_job(self, job_id: str) -> dict:
+        """Request cancellation of a job's not-yet-started files (ADR-17).
+
+        A file already being embedded still finishes normally; only files whose turn
+        has not yet come are affected.
+        """
+        return self._request("DELETE", f"/documents/jobs/{job_id}").json()
 
     def list_documents(self) -> list[dict]:
         """List indexed documents (R-06)."""
@@ -138,8 +152,8 @@ class ApiClient:
                 )
         except httpx.TimeoutException as error:
             # Distinct from a connectivity failure: the API was reached and is very
-            # likely still working (see `_INGEST_TIMEOUT`'s note) — telling the user it
-            # is unreachable would be actively misleading.
+            # likely still working — telling the user it is unreachable would be
+            # actively misleading.
             raise ApiError(
                 "This is taking longer than expected. The work may still be running "
                 "in the background — check Sources shortly."
@@ -780,129 +794,84 @@ def _exclude_removed(names: list[str], excluded: set[str]) -> list[str]:
     return [name for name in names if name not in excluded]
 
 
-def _new_ingest_batch(files: list[tuple[str, bytes]], *, started_at: float) -> dict:
-    """The state one batch advances through, one real file at a time (see
-    `_advance_batch`) — plain data, no Streamlit dependency, so the state machine
-    itself is testable without a running app."""
-    return {
-        "files": files,
-        "index": 0,
-        "results": [],
-        "durations": [],
-        "started_at": started_at,
-    }
+# How often the UI re-polls a running ingestion job (ADR-17). The job itself runs
+# entirely server-side now — this only paces how often the browser asks for an update,
+# it does not affect ingestion speed.
+_INGEST_POLL_SECONDS = 1.5
 
 
-def _batch_is_complete(batch: dict) -> bool:
-    return batch["index"] >= len(batch["files"])
-
-
-def _batch_eta(batch: dict) -> str:
-    """"Estimating…" until at least one file's real duration is known — the ETA is
-    always derived from completed-file timing, never a placeholder or simulated rate.
-    """
-    durations = batch["durations"]
-    remaining = len(batch["files"]) - batch["index"]
-    if not durations:
-        return "Estimating…"
-    return _format_eta((sum(durations) / len(durations)) * remaining)
-
-
-def _advance_batch(batch: dict, outcome: dict, duration: float) -> None:
-    """Record one file's real, already-completed outcome and move to the next."""
-    batch["durations"].append(duration)
-    batch["results"].append(outcome)
-    batch["index"] += 1
-
-
-def _cancel_remaining(batch: dict) -> None:
-    """Mark every not-yet-started file as removed and end the batch there.
-
-    Only ever touches `files[index:]` — whatever has already been indexed, already
-    failed, or is currently mid-request is untouched; this can't retract a real result.
-    """
-    for name, _content in batch["files"][batch["index"] :]:
-        batch["results"].append({"filename": name, "status": "skipped", "error": None})
-    batch["index"] = len(batch["files"])
-
-
-def _start_ingest_batch(files: list) -> None:
-    """Queue a batch for the one-file-per-rerun loop below: real, not simulated —
-    each entry only advances once its real API call has actually completed."""
-    st.session_state["ingest_batch"] = _new_ingest_batch(
-        [(f.name, f.getvalue()) for f in files], started_at=time.monotonic()
-    )
+def _start_ingest_batch(client: ApiClient, files: list) -> None:
+    """Start one real background ingestion job for these files (ADR-17) and remember
+    its id so `_render_ingest_progress` can poll it across reruns."""
+    job = client.start_ingestion([(f.name, f.getvalue()) for f in files])
+    st.session_state["ingest_job_id"] = job["job_id"]
+    st.session_state["ingest_started_at"] = time.monotonic()
 
 
 def _render_ingest_progress(client: ApiClient) -> None:
-    """Advance the in-progress batch by exactly one real file, then rerun.
+    """Poll the running job's real, server-reported progress and rerun.
 
-    One Streamlit rerun per file — never a Python loop over the whole batch — so a
-    "Cancel remaining" click between files is actually seen and acted on before the
-    next real embedding call starts. Nothing here ever touches a file already sent to
-    the API: cancellation only ever applies to files whose turn has not yet come.
+    The job itself advances entirely server-side (ADR-17); this only reflects its
+    current state — nothing here simulates progress or invents an ETA before real
+    completed-file timing exists to base one on.
     """
-    batch = st.session_state["ingest_batch"]
-    files: list[tuple[str, bytes]] = batch["files"]
-    index: int = batch["index"]
-    results: list[dict] = batch["results"]
+    job_id = st.session_state["ingest_job_id"]
+    try:
+        job = client.get_ingestion_job(job_id)
+    except ApiError as error:
+        st.session_state["sources_error"] = str(error)
+        del st.session_state["ingest_job_id"]
+        return
 
+    finished_statuses = {"indexed", "already_indexed", "failed", "skipped"}
+    results = [f for f in job["files"] if f["status"] in finished_statuses]
     if results:
         _render_upload_outcomes(results)
 
-    if _batch_is_complete(batch):
-        _finish_ingest_batch(batch)
+    if job["status"] == "completed":
+        _finish_ingest_job(job)
         st.rerun()
         return
 
-    current_name = files[index][0]
-    st.progress(index / len(files))
+    total = job["total"]
+    completed = job["completed"]
+    current_name = job["current_filename"] or ""
+    st.progress(completed / total if total else 0.0)
     st.markdown(
-        f'<div class="pka-row-meta">{index} / {len(files)} files &middot; '
+        f'<div class="pka-row-meta">{completed} / {total} files &middot; '
         f'<span dir="auto">{html.escape(current_name)}</span> &middot; Indexing…</div>',
         unsafe_allow_html=True,
     )
+    eta = job["eta_seconds"]
     st.markdown(
-        f'<div class="pka-row-meta">Estimated time remaining: {_batch_eta(batch)}</div>',
+        '<div class="pka-row-meta">Estimated time remaining: '
+        f'{_format_eta(eta) if eta is not None else "Estimating…"}</div>',
         unsafe_allow_html=True,
     )
     if st.button("Cancel remaining", use_container_width=True):
-        _cancel_remaining(batch)
-        _finish_ingest_batch(batch)
-        st.rerun()
-        return
-
-    name, content = files[index]
-    started = time.monotonic()
-    with st.spinner(f"Indexing {name}…"):
         try:
-            outcome = client.ingest_files([(name, content)])[0]
+            client.cancel_ingestion_job(job_id)
         except ApiError as error:
-            # A transport-level failure (not a per-file content failure, which the API
-            # already reports as a normal "failed" outcome): the API itself may be
-            # unreachable, so trying the remaining files would just repeat the same
-            # failure. Record this one honestly and stop rather than hammer a dead API.
-            failed = {"filename": name, "status": "failed", "error": str(error)}
-            _advance_batch(batch, failed, time.monotonic() - started)
-            _cancel_remaining(batch)
-            _finish_ingest_batch(batch)
-            st.rerun()
-            return
-    _advance_batch(batch, outcome, time.monotonic() - started)
+            st.session_state["sources_error"] = str(error)
+
+    time.sleep(_INGEST_POLL_SECONDS)
     st.rerun()
 
 
-def _finish_ingest_batch(batch: dict) -> None:
-    st.session_state["upload_outcomes"] = batch["results"]
-    st.session_state["upload_elapsed"] = time.monotonic() - batch["started_at"]
+def _finish_ingest_job(job: dict) -> None:
+    st.session_state["upload_outcomes"] = job["files"]
+    started_at = st.session_state.pop("ingest_started_at", None)
+    st.session_state["upload_elapsed"] = (
+        time.monotonic() - started_at if started_at is not None else None
+    )
     st.session_state["sources_error"] = None
     st.session_state["upload_excluded"] = set()
-    del st.session_state["ingest_batch"]
+    del st.session_state["ingest_job_id"]
 
 
 @st.dialog("Add sources")
 def _add_sources_dialog(client: ApiClient) -> None:
-    if "ingest_batch" in st.session_state:
+    if "ingest_job_id" in st.session_state:
         _render_ingest_progress(client)
         return
 
@@ -959,7 +928,7 @@ def _add_sources_dialog(client: ApiClient) -> None:
         use_container_width=True,
         disabled=not to_index,
     ):
-        _start_ingest_batch(to_index)
+        _start_ingest_batch(client, to_index)
         st.rerun()
 
     # Reset lives here rather than in the panel: it is the documented recovery for an
@@ -1054,10 +1023,9 @@ def _render_sources(
 
     if st.button("＋  Add sources", use_container_width=True):
         _add_sources_dialog(client)
-    elif "ingest_batch" in st.session_state:
-        # A batch is mid-flight across reruns (one file per rerun, see
-        # `_render_ingest_progress`): reopen the same dialog so it stays visible
-        # without waiting for another click.
+    elif "ingest_job_id" in st.session_state:
+        # A background job is still running (see `_render_ingest_progress`, which
+        # polls it): reopen the same dialog so it stays visible without another click.
         _add_sources_dialog(client)
 
     if st.session_state.get("sources_error"):

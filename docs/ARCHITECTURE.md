@@ -13,7 +13,7 @@ UI              streamlit_app.py                  (HTTP client of the API)
 Transport       app/main.py  app/api/  app/schemas/
 Orchestration   app/rag/engine.py
 Domain          app/documents/  app/rag/{indexer,retriever,generator}.py
-Infrastructure  app/storage/vector_store.py  app/config.py
+Infrastructure  app/storage/vector_store.py  app/config.py  app/observability.py
 ```
 
 Consequences:
@@ -34,6 +34,8 @@ implemented, at these paths and nowhere else.
 app/
 ├── main.py              FastAPI app construction and wiring. No business logic.
 ├── config.py            Typed settings (pydantic-settings) + provider client construction.
+├── observability.py     Structured (JSON) logging setup: format and destination only —
+│                        never decides what gets logged (ADR-15).
 ├── api/routes.py        Thin HTTP layer: validate, delegate, return schemas.
 ├── schemas/api.py       Request/response contracts. Independent of FastAPI and of
 │                        the domain/storage types they mirror — `api/routes.py`
@@ -42,7 +44,8 @@ app/
 │   ├── loader.py        File intake, type dispatch, document_id assignment.
 │   ├── parser.py        PDF (poppler `pdftotext`, via subprocess) and DOCX
 │   │                    (python-docx) text extraction.
-│   └── processor.py     Normalization, chunking, metadata propagation.
+│   └── processor.py     Normalization, chunking, metadata propagation, and rejecting
+│                        malformed extraction before it reaches the indexer (ADR-18).
 ├── rag/
 │   ├── indexer.py       One document's chunks → embeddings → vector store, with
 │   │                    failure compensation. Never loops over files.
@@ -50,10 +53,15 @@ app/
 │   ├── generator.py     Context + query → answer + sources, or a refusal. No store,
 │   │                    filesystem, or retrieval access — takes its own `ContextChunk`
 │   │                    type, never `retriever.RetrievedChunk`.
-│   └── engine.py        Orchestrates both flows: `ingest_file(s)` (per-file loading,
-│                        chunking, indexing, and outcome reporting) and `answer_query`
-│                        (retrieve → decide → generate → cite). The only module that
-│                        calls both `rag/retriever.py` and `rag/generator.py`.
+│   ├── engine.py        Orchestrates both flows: `ingest_file(s)` (per-file loading,
+│   │                    chunking, indexing, and outcome reporting) and `answer_query`
+│   │                    (retrieve → decide → generate → cite). The only module that
+│   │                    calls both `rag/retriever.py` and `rag/generator.py`.
+│   └── jobs.py          Background ingestion job tracking (ADR-17): `JobStore`,
+│                        `IngestionJob`/`FileProgress`, and `run_ingestion_job`, the
+│                        function `api/routes.py` hands to `BackgroundTasks`. Delegates
+│                        every file to `engine.ingest_file`; never reimplements
+│                        ingestion logic.
 └── storage/vector_store.py   All Chroma persistence and queries.
 
 tests/unit/               Deterministic components.
@@ -325,6 +333,142 @@ data. `mask_secret` and a new `_sanitize_provider_error` helper apply to this pa
 exactly as they already did to `GET /settings`, so a probe failure's error message can
 never leak a raw key back to the caller (R-08).
 
+**ADR-15 — Structured (JSON) logging via a new `app/observability.py`, with one strict
+invariant: a log record is metadata only, never document/query/answer text or
+credentials.** Before this, `app/` had no logging at all — no record of what was
+ingested, when, with what outcome, no query latency or retrieval scores, no visibility
+into a provider failure once the HTTP response describing it was gone. `observability.py`
+owns exactly two things: `configure_logging(level)`, which attaches one JSON-line
+`StreamHandler` to the root logger (idempotent — a second call is a no-op, so re-entrant
+startup in tests never duplicates handlers), and `log_event(logger, level, message,
+**fields)`, a thin wrapper around the standard library's own `extra=` mechanism so every
+call site produces the same `{message, ...fields}` shape instead of re-inventing it.
+Every other module keeps using `logging.getLogger(__name__)` the normal way — this
+module decides *how* logs are formatted and where they go, never *what* gets logged;
+that stays with each module, same separation `config.py` already has from the code that
+calls it. Four call sites were added, each named directly from a gap in the prior
+foundation audit: `app/main.py` logs one `"startup complete"` event with the masked,
+already-`describe_providers`-shaped provider summary (never a raw key); `app/rag/
+engine.py::ingest_file` logs one `"document ingested"` event per file — status, chunk
+count, and, on failure, the same error string R-09 already deems safe to show the user,
+at `WARNING` for a failure and `INFO` otherwise; `app/rag/engine.py::answer_query` logs
+one `"query answered"` event — elapsed time, retrieved-chunk count, min/max retrieval
+score, refusal flag, and source count, but never the query or answer text, both of which
+may hold sensitive user content; `app/api/routes.py`'s `/query` handler logs a
+`"provider request failed"` event on the existing 502 path. `LOG_LEVEL` (default `INFO`)
+is a new `Settings` field, read once like every other setting (invariant 5 unaffected —
+this adds no new credential or secret). Deliberately excluded: request tracing/span IDs,
+metrics export, log shipping, and a logging call in `streamlit_app.py` — the UI is a
+thin HTTP client with no business logic to observe (ADR-1), and the other omissions have
+no evidenced need yet, matching `STRATEGY.md`'s "avoid overengineering" — plain
+`logging` + one JSON formatter is deliberately the entire mechanism, not a first piece
+of a larger observability framework.
+
+**ADR-16 — One pinned Python version (3.14), enforced by CI, resolves open question 1.**
+`pyproject.toml`'s `requires-python` previously said `>=3.11`, a floor that was never
+actually verified — every test in this repository has only ever run on 3.14, the
+version `.python-version` already pinned. The two disagreeing forever was strictly worse
+than either alone: a contributor on 3.11 would hit failures nothing here ever caught.
+Resolved by narrowing `requires-python` to `==3.14.*`, matching `.python-version`
+exactly, rather than the reverse (widening `.python-version`'s guarantee to a range
+nothing had tested) — the smaller, evidence-backed claim. `uv` already installs
+whichever Python version a project asks for if it isn't present, so a single pinned
+version costs nothing extra on Windows or Linux (`STRATEGY.md`'s "Windows deployment
+simple" / "no platform-specific hacks" both hold unchanged).
+
+New minimal CI (`.github/workflows/ci.yml`) runs on every push and pull request against
+this same pinned version: `ruff check`, `pyright`, then `pytest` — the same three checks
+this project's own workflow already required of every change by convention, now
+enforced automatically instead of only by habit. One deliberate scoping decision: `ruff`
+and `pyright` are run against `app/ streamlit_app.py tests/` specifically, not the whole
+repository — `eval/run_benchmark.py` has pre-existing, unrelated typing/lint issues from
+its numpy/ONNX-heavy benchmarking code (never part of the shipped application, and out
+of scope for this change to fix), and scoping the CI commands is far smaller than either
+fixing that debt now or changing `ruff`/`pyright`'s project-wide configuration to carve
+it out. Not added, deliberately: a multi-version test matrix (there is exactly one
+supported version, so a matrix would test versions nothing else in this project
+supports), dependency caching beyond `astral-sh/setup-uv`'s own built-in cache, and any
+deployment/release step — this workflow only answers "does the existing test suite,
+lint, and type-check still pass," matching `STRATEGY.md`'s standing instruction not to
+add infrastructure ahead of an evidenced need.
+
+**ADR-17 — `POST /documents` starts a background ingestion job instead of embedding
+inline; a new `rag/jobs.py` tracks progress.** Diagnosed 2026-08-20 on a real
+deployment (CPU-only, no GPU, local Ollama-served `bge-m3`): because the API runs as a
+single uvicorn worker and `ingest_file`'s embedding calls are synchronous, one in-flight
+upload blocked the *entire* process — including `GET /documents`, which touches no
+embedding model at all. A small (~500KB, ~20-chunk) file could appear to take ~10
+minutes wall-clock not because embedding itself is that slow (documented at
+~2.5–2.8s/chunk, so ~1 minute expected), but because the whole API — and therefore the
+UI — was unresponsive for the duration, compounding with the OpenAI client's own
+retry/backoff on any request that brushed the timeout while starved of CPU by a
+concurrent call. Fix: `POST /documents` now reads the uploaded files, creates an
+`IngestionJob` via `JobStore.create`, hands `run_ingestion_job` to FastAPI's
+`BackgroundTasks` (which Starlette runs via `anyio`'s worker-thread pool, off the
+request-handling event loop — verified directly: a regression test drives a slow-stub
+upload from one thread and asserts `GET /documents` still returns in well under the
+embedding delay from another), and returns `202` with the job's initial state
+immediately. `GET /documents/jobs/{job_id}` polls progress and, once finished, the same
+`indexed`/`already_indexed`/`failed` per-file outcomes the old synchronous response
+carried — ADR-7's per-file compensation and ADR-3's dedup are called exactly as before,
+now from `run_ingestion_job` instead of `engine.ingest_files` directly; only *when* the
+caller learns the outcome changed. `DELETE /documents/jobs/{job_id}` requests
+cancellation of not-yet-started files only — a file already mid-embedding always
+finishes normally, the same rule the UI's pre-existing "Cancel remaining" affordance
+already followed.
+
+Deliberately not Celery/Redis/a message queue: this is a single-user, local-first tool
+(STRATEGY.md), and the actual requirement is "don't block the one process," not
+distributed task execution. `JobStore` is an in-memory `dict[str, IngestionJob]` behind
+a `threading.Lock`; a module-level `threading.Lock` in `jobs.py` is held for a job's
+entire file loop so at most one job ever embeds at a time — the embedding backend
+already serializes requests internally (one local model instance), so this doesn't cost
+throughput, it just keeps this process's own behavior deterministic rather than opening
+concurrent calls into a backend never asked to handle them. Accepted trade-off: the job
+store is not persisted, so a job is gone after a restart. This is safe because nothing
+is ever written to Chroma until a file's chunks are fully embedded (`indexer._write`
+inserts all of a document's nodes in one call) — a restart mid-job loses that job's
+*tracking*, never leaves partial vectors behind; a client sees `404` on the vanished job
+id and can safely re-upload (ADR-3's content-derived id makes any already-finished file
+report `already_indexed` again, cheaply). `streamlit_app.py`'s ingest UI keeps its
+existing visual design (progress bar, current file, final per-file outcomes, "Cancel
+remaining") but now polls the job endpoint instead of driving one HTTP call per file
+itself; `_INGEST_TIMEOUT`'s long client timeout is no longer needed since neither
+`POST /documents` nor a status poll ever blocks on embedding anymore.
+
+**ADR-18 — `documents/processor.py` rejects a document whose extracted text is
+dominated by Unicode control/private-use/surrogate/unassigned characters, before any
+chunk reaches the indexer.** Diagnosed 2026-08-20 against a real file
+(`15_abyari_ch3.pdf`, an Amuzeh-custom-encoded-font Persian PDF): its `pdftotext`
+extraction is not merely low-fidelity (the known, already-documented ADR-12
+territory) but embeds C0 control codepoints (`\x06`, `\x0f`, `\x18`, ...) in place
+of real glyphs — a broken font/CMap mapping, not degraded-but-real text — and
+sending such text to the embedding backend was observed to make individual
+embedding requests take far longer than the ~2.5-2.8s/chunk baseline ADR-13
+measured, the practical experience of which is a slow-to-hanging ingestion rather
+than a clean failure. `process_document` now computes, per chunk (after
+normalization, so legitimate invisible/bidi/mark characters are already gone), the
+share of characters in Unicode categories `Cc`/`Co`/`Cs`/`Cn` — categories that
+never occur in real prose in any meaningful density — and raises
+`PathologicalTextError` if any chunk at least 100 characters long exceeds 0.7%.
+`rag/engine.py::ingest_file` catches it the same way it already catches
+`ParsingError`, converting it into a normal `failed` `IngestOutcome` (R-09) with no
+chunk ever reaching `index_document` — this is a chunking-stage rejection, not a new
+indexer or Chroma behavior, so ADR-7's per-file compensation is never invoked
+because there is nothing to compensate. The 0.7% threshold was calibrated against a
+real corpus of ~35 extracted PDFs (English, Persian, mixed, clean and broken-font):
+clean documents — including ones with an occasional single mis-mapped glyph, e.g.
+one stray `\x07` standing in for a citation character in an otherwise pristine
+academic PDF — measured at most ~0.32% per chunk; every document sharing
+`15_abyari_ch3.pdf`'s broken font measured at least ~1.6%. The threshold sits at
+that gap's geometric midpoint, with over 2x margin on both sides, and is
+deliberately not text length, page count, or language (invariant 10) — a genuinely
+long, clean PDF in either language is unaffected; the signal is specific to
+malformed extraction. Documents sharing the same broken font as `15_abyari_ch3.pdf`
+are rejected too, which is correct: they carry the same risk, not merely
+coincidental similarity. Recovery is the same as any other `failed` outcome:
+re-export the PDF with a different tool (or a different font) and re-upload.
+
 ## Performance
 
 Scale evaluation (2026-08-18) against the current production setup: poppler PDF
@@ -398,6 +542,12 @@ Unit-test `streamlit_app.py`'s `ApiClient` against `httpx.MockTransport` — req
 shape, response decoding, and error-message translation — never a running UI or a
 running API; there is no browser-level test in this project.
 
+Test logging (ADR-15) via `caplog`, at both ends: the formatter/`log_event` mechanism in
+isolation (`tests/unit/test_observability.py`), and each real call site in
+`app/rag/engine.py`/`app/main.py`/`app/api/routes.py` — asserting the event was emitted
+with the right fields, and, for events built from real inputs (a query, an ingested
+file), that the logged fields never contain the query, answer, or document text itself.
+
 Rules: no live provider calls in tests — stub the LLM and embedding clients; tests use a
 temporary Chroma path, never `chroma_db/`; assert observable behavior, not internal call
 sequences. Every text-handling test covers English, Persian, and mixed content — a
@@ -422,8 +572,15 @@ Do not add frameworks, infrastructure, or abstraction layers without a requireme
 
 Unresolved by the repository; decide before the affected work begins.
 
-1. **Python target.** `.python-version` pins 3.14 while `pyproject.toml` requires
-   ≥ 3.11. Which is authoritative for CI and deployment?
+1. ~~**Python target.** `.python-version` pins 3.14 while `pyproject.toml` requires
+   ≥ 3.11. Which is authoritative for CI and deployment?~~ **Resolved 2026-08-20:**
+   `pyproject.toml`'s `requires-python` is corrected to `==3.14.*`, matching
+   `.python-version` exactly — the single supported version is 3.14, the one every
+   test in this repository has actually been run against so far (a floor of `>=3.11`
+   was never verified on 3.11/3.12/3.13 and offered no evidenced benefit). `uv`
+   installs this exact version itself if it isn't already present, so pinning one
+   version adds no deployment friction on either Windows or Linux (ADR-16). CI
+   (`.github/workflows/ci.yml`, new) enforces this same version.
 2. **`RETRIEVAL_MIN_SCORE` value and metric.** ~~The default is a placeholder~~
    **Measured 2026-08-17** against a real `BAAI/bge-m3` deployment (served locally via
    Ollama's OpenAI-compatible endpoint) and a real `openai/gpt-4o-mini` LLM (via

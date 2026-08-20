@@ -71,6 +71,62 @@ class IngestionResponse(BaseModel):
     results: list[IngestOutcome]
 
 
+class JobFileStatus(StrEnum):
+    """A file's progress within an ingestion job (ADR-17). Mirrors `jobs.FileStatus`.
+
+    `INDEXED`/`ALREADY_INDEXED`/`FAILED` are exactly `IngestStatus`'s members — once a
+    file reaches one of them, its entry carries the same `document_id`/`chunk_count`/
+    `error` rules `IngestOutcome` already documents. `QUEUED`/`PROCESSING` are job-only
+    states. `SKIPPED` is also job-only: the file's turn never came because
+    cancellation (`DELETE /documents/jobs/{job_id}`) was requested first.
+    """
+
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    INDEXED = "indexed"
+    ALREADY_INDEXED = "already_indexed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class JobFileProgress(BaseModel):
+    """One file's current state within an ingestion job. Mirrors `jobs.FileProgress`."""
+
+    filename: str = Field(min_length=1)
+    status: JobFileStatus
+    document_id: str | None = None
+    chunk_count: int = Field(default=0, ge=0)
+    error: str | None = None
+
+
+class JobStatus(StrEnum):
+    """An ingestion job's lifecycle stage (ADR-17). Mirrors `jobs.JobStatus`."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+
+
+class IngestionJobResponse(BaseModel):
+    """Progress and, once finished, results of a background ingestion job (ADR-17).
+
+    Returned immediately (HTTP 202) by `POST /documents`, and again by
+    `GET /documents/jobs/{job_id}` on every poll — same shape either way, so a client
+    reads `status`/`completed`/`total`/`current_filename`/`eta_seconds` at any point in
+    the job's life without a different response type to handle once it finishes.
+    `eta_seconds` is `None` whenever there isn't yet a real completed file to base an
+    estimate on (no fake progress).
+    """
+
+    job_id: str = Field(min_length=1)
+    status: JobStatus
+    total: int = Field(ge=0)
+    completed: int = Field(ge=0)
+    current_filename: str | None = None
+    eta_seconds: float | None = None
+    files: list[JobFileProgress]
+
+
 class DocumentSummary(BaseModel):
     """One entry in the knowledge base listing (R-06). Mirrors `vector_store.DocumentSummary`."""
 

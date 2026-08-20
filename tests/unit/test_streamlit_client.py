@@ -15,15 +15,10 @@ import pytest
 from streamlit_app import (
     ApiClient,
     ApiError,
-    _advance_batch,
     _answer_html,
-    _batch_eta,
-    _batch_is_complete,
-    _cancel_remaining,
     _error_detail,
     _exclude_removed,
     _format_eta,
-    _new_ingest_batch,
 )
 
 
@@ -35,54 +30,53 @@ def _json_response(status_code: int, payload: object) -> httpx.Response:
     return httpx.Response(status_code, json=payload)
 
 
-class TestIngestFiles:
-    def test_posts_multipart_files_and_returns_results(self) -> None:
+class TestIngestionJobs:
+    """`ApiClient`'s side of ADR-17's background-ingestion contract: `POST /documents`
+    starts a job and returns immediately, `GET`/`DELETE .../jobs/{id}` poll/cancel it.
+    """
+
+    def test_start_ingestion_posts_multipart_files_and_returns_the_job(self) -> None:
         captured: dict[str, httpx.Request] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["request"] = request
             return _json_response(
-                200,
+                202,
                 {
-                    "results": [
-                        {
-                            "filename": "a.pdf",
-                            "status": "indexed",
-                            "document_id": "d1",
-                            "chunk_count": 2,
-                            "error": None,
-                        }
-                    ]
+                    "job_id": "job-1",
+                    "status": "queued",
+                    "total": 1,
+                    "completed": 0,
+                    "current_filename": None,
+                    "eta_seconds": None,
+                    "files": [{"filename": "a.pdf", "status": "queued"}],
                 },
             )
 
         client = _client(handler)
-        results = client.ingest_files([("a.pdf", b"%PDF-1.4 ...")])
+        job = client.start_ingestion([("a.pdf", b"%PDF-1.4 ...")])
 
         request = captured["request"]
         assert request.method == "POST"
         assert request.url.path == "/documents"
         assert b'name="files"; filename="a.pdf"' in request.content
-        assert results == [
-            {
-                "filename": "a.pdf",
-                "status": "indexed",
-                "document_id": "d1",
-                "chunk_count": 2,
-                "error": None,
-            }
-        ]
+        assert job["job_id"] == "job-1"
+        assert job["status"] == "queued"
 
-    def test_a_failed_outcome_is_returned_not_raised(self) -> None:
-        """A per-file ingestion failure is API response data (R-09), never an
-        `ApiError` — the client must not treat a 200 with a `failed` outcome as an
-        error."""
-
+    def test_get_ingestion_job_polls_by_id(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            assert request.url.path == "/documents/jobs/job-1"
             return _json_response(
                 200,
                 {
-                    "results": [
+                    "job_id": "job-1",
+                    "status": "completed",
+                    "total": 1,
+                    "completed": 1,
+                    "current_filename": None,
+                    "eta_seconds": None,
+                    "files": [
                         {
                             "filename": "notes.txt",
                             "status": "failed",
@@ -90,15 +84,35 @@ class TestIngestFiles:
                             "chunk_count": 0,
                             "error": "Unsupported file type",
                         }
-                    ]
+                    ],
                 },
             )
 
-        client = _client(handler)
-        results = client.ingest_files([("notes.txt", b"irrelevant")])
+        job = _client(handler).get_ingestion_job("job-1")
 
-        assert results[0]["status"] == "failed"
-        assert results[0]["error"] == "Unsupported file type"
+        assert job["status"] == "completed"
+        assert job["files"][0]["status"] == "failed"
+        assert job["files"][0]["error"] == "Unsupported file type"
+
+    def test_cancel_ingestion_job_sends_delete(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "DELETE"
+            assert request.url.path == "/documents/jobs/job-1"
+            return _json_response(
+                200,
+                {
+                    "job_id": "job-1",
+                    "status": "running",
+                    "total": 2,
+                    "completed": 1,
+                    "current_filename": None,
+                    "eta_seconds": None,
+                    "files": [],
+                },
+            )
+
+        job = _client(handler).cancel_ingestion_job("job-1")
+        assert job["job_id"] == "job-1"
 
 
 class TestListDocuments:
@@ -229,15 +243,15 @@ class TestErrorHandling:
         assert "ConnectError" not in message
 
     def test_timeout_is_reported_as_slow_not_unreachable(self) -> None:
-        """A long-running ingestion job that outlasts the client timeout is not the
-        same failure as the API being down — the wording must not conflate them."""
+        """A slow request that outlasts the client timeout is not the same failure as
+        the API being down — the wording must not conflate them."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ReadTimeout("timed out", request=request)
 
         client = _client(handler)
         with pytest.raises(ApiError) as exc_info:
-            client.ingest_files([("big.pdf", b"%PDF-1.4 ...")])
+            client.start_ingestion([("big.pdf", b"%PDF-1.4 ...")])
 
         message = str(exc_info.value).lower()
         assert "longer than expected" in message
@@ -521,93 +535,8 @@ class TestExcludeRemoved:
         ]
 
 
-class TestIngestBatchStateMachine:
-    """The batch progress state machine is plain data + pure functions, independent
-    of Streamlit — real per-file progress, `X / N`, ETA, and cancellation are all
-    testable here without a running app."""
 
-    def test_new_batch_starts_at_zero_of_n_and_is_not_complete(self) -> None:
-        batch = _new_ingest_batch([("a.pdf", b"1"), ("b.pdf", b"2")], started_at=0.0)
-        assert batch["index"] == 0
-        assert len(batch["files"]) == 2
-        assert not _batch_is_complete(batch)
-
-    def test_eta_is_estimating_before_any_file_completes(self) -> None:
-        batch = _new_ingest_batch([("a.pdf", b"1"), ("b.pdf", b"2")], started_at=0.0)
-        assert _batch_eta(batch) == "Estimating…"
-
-    def test_eta_uses_real_completed_file_timing_once_available(self) -> None:
-        """Not simulated: the ETA is `avg(real durations so far) * files remaining`."""
-        batch = _new_ingest_batch(
-            [("a.pdf", b"1"), ("b.pdf", b"2"), ("c.pdf", b"3")], started_at=0.0
-        )
-        _advance_batch(batch, {"filename": "a.pdf", "status": "indexed"}, 10.0)
-        # One real 10s sample, two files remaining -> 20s.
-        assert _batch_eta(batch) == _format_eta(20.0)
-
-    def test_advance_batch_reaches_completion_with_correct_x_of_n(self) -> None:
-        batch = _new_ingest_batch([("a.pdf", b"1"), ("b.pdf", b"2")], started_at=0.0)
-        assert not _batch_is_complete(batch)
-
-        _advance_batch(batch, {"filename": "a.pdf", "status": "indexed"}, 1.0)
-        assert batch["index"] == 1
-        assert not _batch_is_complete(batch)
-
-        _advance_batch(batch, {"filename": "b.pdf", "status": "indexed"}, 1.0)
-        assert batch["index"] == 2
-        assert _batch_is_complete(batch)
-
-    def test_advance_batch_never_alters_the_outcome_it_is_given(self) -> None:
-        """No false success/failure states: the batch records exactly the outcome
-        dict it receives, never substituting or inferring a status of its own."""
-        batch = _new_ingest_batch([("a.pdf", b"1")], started_at=0.0)
-        real_outcome = {
-            "filename": "a.pdf",
-            "status": "already_indexed",
-            "document_id": "doc-1",
-            "chunk_count": 0,
-            "error": None,
-        }
-        _advance_batch(batch, real_outcome, 0.5)
-        assert batch["results"] == [real_outcome]
-
-    def test_mixed_batch_preserves_every_real_status(self) -> None:
-        """Indexed, already_indexed, and failed outcomes all survive untouched in a
-        single batch — exactly the existing per-file semantics, unchanged."""
-        batch = _new_ingest_batch(
-            [("a.pdf", b"1"), ("b.pdf", b"2"), ("c.pdf", b"3")], started_at=0.0
-        )
-        _advance_batch(batch, {"filename": "a.pdf", "status": "indexed"}, 1.0)
-        _advance_batch(batch, {"filename": "b.pdf", "status": "already_indexed"}, 0.1)
-        _advance_batch(
-            batch, {"filename": "c.pdf", "status": "failed", "error": "bad file"}, 0.2
-        )
-        assert _batch_is_complete(batch)
-        assert [r["status"] for r in batch["results"]] == [
-            "indexed",
-            "already_indexed",
-            "failed",
-        ]
-
-    def test_cancel_remaining_only_marks_files_not_yet_started(self) -> None:
-        """Safe handling of files already being processed: cancelling never touches
-        `files[:index]` — whatever was already indexed, already-indexed, or failed
-        stays exactly as recorded."""
-        batch = _new_ingest_batch(
-            [("a.pdf", b"1"), ("b.pdf", b"2"), ("c.pdf", b"3")], started_at=0.0
-        )
-        _advance_batch(batch, {"filename": "a.pdf", "status": "indexed"}, 1.0)
-
-        _cancel_remaining(batch)
-
-        assert _batch_is_complete(batch)
-        statuses = {r["filename"]: r["status"] for r in batch["results"]}
-        assert statuses["a.pdf"] == "indexed"  # untouched, already real
-        assert statuses["b.pdf"] == "skipped"
-        assert statuses["c.pdf"] == "skipped"
-
-    def test_cancel_remaining_on_a_fresh_batch_skips_everything(self) -> None:
-        batch = _new_ingest_batch([("a.pdf", b"1"), ("b.pdf", b"2")], started_at=0.0)
-        _cancel_remaining(batch)
-        assert _batch_is_complete(batch)
-        assert {r["status"] for r in batch["results"]} == {"skipped"}
+# The batch progress state machine that used to live here (index/durations/ETA,
+# cancel-remaining) moved server-side with ADR-17: that logic now lives in, and is
+# unit-tested by, `app/rag/jobs.py` / `tests/unit/test_jobs.py`. This module only
+# renders whatever `IngestionJob` state the API reports.

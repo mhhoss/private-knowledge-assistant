@@ -1,0 +1,43 @@
+# Minimal CI: the same three checks this project already required of every change by
+# convention (lint, type-check, test), now enforced automatically. One supported Python
+# version — 3.14, per `.python-version`/`pyproject.toml`'s `requires-python` (ADR-16) —
+# no version matrix, since nothing else in this project supports more than one.
+#
+# ruff/pyright are scoped to app/, streamlit_app.py, and tests/ deliberately: eval/ has
+# pre-existing, unrelated typing/lint issues in its numpy/ONNX-heavy benchmarking code
+# (never part of the shipped application) that this workflow is not the place to fix.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PDF ingestion shells out to poppler's pdftotext (ADR-12); several tests exercise
+      # that real subprocess call, not a mock of it.
+      - name: Install poppler-utils
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint (ruff)
+        run: uv run ruff check app/ streamlit_app.py tests/
+
+      - name: Type check (pyright)
+        run: uv run pyright app/ streamlit_app.py tests/
+
+      - name: Test (pytest)
+        run: uv run pytest

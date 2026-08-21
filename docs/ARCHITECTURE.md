@@ -438,7 +438,10 @@ itself; `_INGEST_TIMEOUT`'s long client timeout is no longer needed since neithe
 
 **ADR-18 — `documents/processor.py` rejects a document whose extracted text is
 dominated by Unicode control/private-use/surrogate/unassigned characters, before any
-chunk reaches the indexer.** Diagnosed 2026-08-20 against a real file
+chunk reaches the indexer.** *(Threshold amended by ADR-19: 0.7% below was found to
+reject an entire real document family that is indexable once embedding batch/timeout
+is sized correctly; the mechanism and reasoning below are otherwise unchanged.)*
+Diagnosed 2026-08-20 against a real file
 (`15_abyari_ch3.pdf`, an Amuzeh-custom-encoded-font Persian PDF): its `pdftotext`
 extraction is not merely low-fidelity (the known, already-documented ADR-12
 territory) but embeds C0 control codepoints (`\x06`, `\x0f`, `\x18`, ...) in place
@@ -468,6 +471,79 @@ malformed extraction. Documents sharing the same broken font as `15_abyari_ch3.p
 are rejected too, which is correct: they carry the same risk, not merely
 coincidental similarity. Recovery is the same as any other `failed` outcome:
 re-export the PDF with a different tool (or a different font) and re-upload.
+
+**ADR-19 — ADR-18's rejection threshold is raised from 0.7% to 15%, and
+`EMBEDDING_BATCH_SIZE`/`EMBEDDING_TIMEOUT_SECONDS` are re-tuned from 10/120 to
+5/300, so ADR-18's whole broken-font document family indexes successfully instead
+of being rejected outright.** Investigated 2026-08-20 after ADR-18 was found to
+reject the majority (14 of 19) of a real Persian PDF corpus sharing one broken
+custom font ("Amuzeh"), not just the one file (`15_abyari_ch3.pdf`) that originally
+motivated it. Two questions needed real measurement, not assumption: whether
+`16_apartmani3_ch2.pdf` — one of the rejected files, specifically raised as a
+possible false positive — actually belongs to the same family, and whether that
+family's corruption is severe enough to justify outright rejection versus merely
+needing more time. Both were answered directly against the real files and the real
+embedding backend (CPU-served `BAAI/bge-m3` via Ollama), not inferred:
+- **Same family, confirmed two ways.** `pdffonts` shows `16_apartmani3_ch2.pdf`
+  embeds the identical custom `Amuzeh`/`Amuzeh-Bold` Type1C font as
+  `15_abyari_ch3.pdf`, same `Producer: Apogee Pilot Series3 v1.0`, same 2004
+  creation era. Separately, `_non_text_ratio` measured 15 and 16 as
+  statistically indistinguishable (15: 1.6%-3.9% per chunk; 16: 1.6%-5.0%) — no
+  ratio threshold could separate one from the other.
+- **The corruption is real but not fatal.** Direct embedding-latency measurement
+  (5+ samples per case, single and batched requests) found corrupted-family
+  chunks take **~3-4x longer** to embed than clean chunks of the same length
+  (clean: ~6.3-6.6s/chunk sustained; corrupted family: ~22-24s/chunk sustained) —
+  a real, consistent, non-overlapping slowdown, not noise. At the *previous*
+  defaults (`EMBEDDING_BATCH_SIZE=10`, `EMBEDDING_TIMEOUT_SECONDS=120`), a batch of
+  10 corrupted chunks (~220-240s) reproducibly exceeds the 120s timeout — this is
+  the exact mechanism ADR-18 was built to avoid, confirmed directly rather than
+  assumed, and it explains why the family was originally deemed unrecoverable.
+  But 3-4x slower is not "hanging": a whole real document from this family (a
+  scale-model corpus test) completed successfully once batch/timeout were sized
+  for the measured rate.
+
+Given both findings, outright rejection was treating a *tunable* problem
+(request-size-vs-timeout math) as an *unrecoverable* one (content that can never be
+embedded safely). The fix addresses each: `EMBEDDING_BATCH_SIZE` drops to 5 and
+`EMBEDDING_TIMEOUT_SECONDS` rises to 300, keeping a full batch at a deliberately
+conservative 30s/chunk (150s) at 2x margin under the timeout even for the slower
+corrupted-family case — the same "at least 2x margin" methodology ADR-13 already
+established, re-measured rather than assumed stale. ADR-18's `_PATHOLOGICAL_RATIO_THRESHOLD`
+rises from 0.007 to 0.15 — more than 2x above the corrupted family's measured
+ceiling (6.4% across the full 19-file real corpus), so the whole family now passes,
+while a document whose corruption is far more severe (no realistic batch/timeout
+tuning would make embedding it worthwhile) still fails fast before any embedding
+call, exactly as ADR-18 intended. This is a recalibration of two existing,
+independent tuning knobs (ADR-13's and ADR-18's), not a new mechanism, an
+architectural change, or a loosening of ADR-18's purpose: content that is
+*genuinely* mostly noise is still rejected outright; content that is merely slower
+than average is now given the time it measurably needs instead.
+
+**ADR-20 — generation is pinned to `temperature=0.0`, the system prompt asks for
+explicit step-by-step reasoning on rule/calculation questions and for conflicts
+between sources to be surfaced rather than resolved, and `RETRIEVAL_TOP_K` drops
+from 5 to 3.** All four are groundedness measures on the generation side, made
+2026-08-20 while working the real Persian corpus of ADR-18/ADR-19. `temperature=0.0`
+in `build_llm` makes the same question over the same retrieved context produce the
+same answer: sampling variance was never a feature here, and a fixed temperature is
+what makes the refusal sentinel (ADR-4) and the eval corpus reproducible at all —
+open question 5's earlier verification ran at framework defaults, which is why it
+is recorded there as a caveat rather than a result. The two added prompt rules keep
+the model inside the context it was given: showing the arithmetic makes an
+ungrounded step visible in the answer instead of hidden inside a number, and an
+explicit conflict report is the honest output when two indexed documents disagree —
+silently picking one, or averaging them, would present a choice the context does
+not support as if it were a fact. Both rules are worded domain-agnostically
+(invariant: no domain logic in the foundation) and add no code, no state, and no
+new failure mode: they are prompt text, and every existing guard — the sentinel
+refusal, `_drop_unresolvable_citations`, the `sources` contract — is unchanged.
+`RETRIEVAL_TOP_K=3` narrows the context window each answer must stay grounded in;
+it was *not* re-swept, so the honest status is an operational default, not a
+measured one. Open question 2's sweep found no correctness difference across
+3/5/8 on the `eval/` corpus, so 3 is within the range that was measured to be
+safe there, but `RETRIEVAL_MIN_SCORE`'s own threshold was measured at `top_k=5` —
+re-measure both together before treating either as final.
 
 ## Performance
 
@@ -621,8 +697,10 @@ Unresolved by the repository; decide before the affected work begins.
    changed citation granularity, not correctness; it does not rule out `CHUNK_SIZE`
    mattering more on longer real documents. `RETRIEVAL_TOP_K` was not swept
    independently; `top_k=5` combined with the corrected `RETRIEVAL_MIN_SCORE` produced
-   reasonable results in this sample. The collection is created with cosine distance so
-   that scores are comparable to a fixed threshold at all.
+   reasonable results in this sample — the default was later narrowed to 3 for
+   groundedness (ADR-20) without re-measuring this threshold against it. The
+   collection is created with cosine distance so that scores are comparable to a
+   fixed threshold at all.
 3. **Upload limits.** No maximum file size, page count, or concurrent-upload behavior is
    specified.
 4. **Cross-lingual semantic retrieval quality is untested against a real embedding
@@ -640,7 +718,8 @@ Unresolved by the repository; decide before the affected work begins.
 5. **Sentinel-based model refusal detection is untested against a real LLM.**
    ~~Needs verification against the configured provider once one is available.~~
    **Verified 2026-08-17** against real `openai/gpt-4o-mini` via OpenRouter (framework
-   defaults, no `temperature=0` override): 3/3 out-of-corpus queries triggered the
+   defaults, no `temperature=0` override — since pinned to 0.0 by ADR-20, so this
+   result predates the current setting): 3/3 out-of-corpus queries triggered the
    sentinel and were converted to the canned refusal correctly, with no instances of the
    raw `[[INSUFFICIENT_CONTEXT]]` token leaking to the user, wrapped in commentary, or
    translated, across all 10 evaluation queries (English and Persian). Sample size is

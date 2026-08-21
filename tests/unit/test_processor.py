@@ -202,7 +202,21 @@ class TestProcessDocument:
 # interleaved with C0 control codepoints (\x06, \x07, \x0f, \x18, \x19) that a correct
 # CMap would never emit into extracted text.
 _GARBLED_UNIT = "È«ÅÁdD\x06 È—UOÐ¬\x18 vð—UN\x0f t ULOÄ\x19 "
-GARBLED_TEXT = _GARBLED_UNIT * 20  # long enough to clear the length floor
+
+# Diluted with clean filler to land at ~3.7% non-text density — squarely inside the
+# real measured range of 15_abyari_ch3.pdf/16_apartmani3_ch2.pdf's whole broken-font
+# family (1.6%-6.4%, ADR-19). This must now be indexed, not rejected: ADR-19 tunes
+# embedding batch/timeout for exactly this family's measured cost instead of
+# rejecting it outright.
+_MODERATELY_GARBLED_FILLER = (
+    "clean filler text that dilutes density toward the real measured family ratio. "
+)
+MODERATELY_GARBLED_TEXT = (_GARBLED_UNIT + _MODERATELY_GARBLED_FILLER) * 20
+
+# Far beyond anything in the real corpus (50% non-text) - the "all-noise" case
+# ADR-19 keeps rejecting outright, since no realistic batch/timeout tuning makes an
+# extraction this corrupted worth embedding at all.
+_SEVERELY_GARBLED_TEXT = "".join(f"{c}\x06" for c in "ABCDEFGHIJ") * 20
 
 # A real academic PDF (`medical/02_..._questionnaire.pdf`) has occasional single
 # mis-mapped glyphs (about one `\x07` per thousand characters) in otherwise clean,
@@ -220,16 +234,32 @@ MOSTLY_CLEAN_FILLER = (
 
 
 class TestPathologicalTextDetection:
-    def test_broken_font_extraction_is_rejected(self) -> None:
+    def test_severely_broken_font_extraction_is_rejected(self) -> None:
         with pytest.raises(PathologicalTextError, match="corrupted"):
             process_document(
                 document_id="d",
                 filename="broken.pdf",
                 file_type="pdf",
-                raw_text=GARBLED_TEXT,
+                raw_text=_SEVERELY_GARBLED_TEXT,
                 chunk_size=200,
                 chunk_overlap=0,
             )
+
+    def test_moderately_broken_font_matching_the_real_family_is_not_rejected(
+        self,
+    ) -> None:
+        """15_abyari_ch3.pdf and 16_apartmani3_ch2.pdf's shared broken font (ADR-19):
+        indexable once embedding batch/timeout is sized for its measured cost, so it
+        must not be rejected outright."""
+        chunks = process_document(
+            document_id="d",
+            filename="16_apartmani3_ch2.pdf",
+            file_type="pdf",
+            raw_text=MODERATELY_GARBLED_TEXT,
+            chunk_size=200,
+            chunk_overlap=0,
+        )
+        assert chunks
 
     def test_occasional_mis_mapped_glyph_in_clean_text_is_not_rejected(self) -> None:
         raw_text = MOSTLY_CLEAN_WITH_ONE_GLYPH_GLITCH + MOSTLY_CLEAN_FILLER * 12
@@ -274,7 +304,7 @@ class TestPathologicalTextDetection:
                 document_id="d",
                 filename="broken.pdf",
                 file_type="pdf",
-                raw_text=GARBLED_TEXT,
+                raw_text=_SEVERELY_GARBLED_TEXT,
                 chunk_size=200,
                 chunk_overlap=0,
             )

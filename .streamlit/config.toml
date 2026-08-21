@@ -4,6 +4,9 @@
 # Serves ./static/ at /app/static/, so the vendored Vazirmatn font is loaded from
 # this machine rather than a font CDN (local-first: no request leaves the host).
 enableStaticServing = true
+# Dev convenience: auto-rerun the app whenever streamlit_app.py is saved, instead of
+# requiring a manual restart.
+runOnSave = true
 
 [theme]
 # Aligns Streamlit's own native accents (focus rings, primary controls) with the

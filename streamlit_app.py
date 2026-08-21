@@ -372,8 +372,13 @@ div[data-testid="stHorizontalBlock"]:has(button[title^="Remove"]) button:focus-v
     font-size: 0.87rem; color: var(--ink-soft); line-height: 1.55;
     background: var(--canvas); border-radius: 12px; padding: 0.7rem 0.9rem;
     margin-bottom: 1.3rem;
+    /* Direction and alignment follow the rendered script, matching the composer. */
+    unicode-bidi: plaintext; text-align: start;
 }
-.pka-reply { font-size: 0.99rem; line-height: 1.78; color: var(--ink); }
+.pka-reply {
+    font-size: 0.99rem; line-height: 1.78; color: var(--ink);
+    unicode-bidi: plaintext; text-align: start;
+}
 .pka-declined {
     background: var(--canvas); border-radius: 12px; padding: 0.9rem 1rem;
 }
@@ -383,6 +388,7 @@ div[data-testid="stHorizontalBlock"]:has(button[title^="Remove"]) button:focus-v
 }
 .pka-declined-text {
     color: var(--ink-soft); font-size: 0.93rem; line-height: 1.65;
+    unicode-bidi: plaintext; text-align: start;
 }
 /* The chat panel is a flex column: the title + history live in their own scrollable
    region (`.pka-history` marks its container below) above the composer, which is a
@@ -441,12 +447,16 @@ div[data-testid="stColumn"]:has(.pka-composer)
 }
 .pka-cite-name {
     font-size: 0.8rem; font-weight: 600; color: var(--ink); margin-bottom: 0.1rem;
+    unicode-bidi: plaintext; text-align: start;
 }
 .pka-cite-meta {
     font-size: 0.69rem; color: var(--ink-faint); letter-spacing: 0.03em;
     padding-bottom: 0.5rem; margin-bottom: 0.55rem; border-bottom: 1px solid var(--line);
 }
-.pka-cite-body { font-size: 0.85rem; color: var(--ink-soft); line-height: 1.65; }
+.pka-cite-body {
+    font-size: 0.85rem; color: var(--ink-soft); line-height: 1.65;
+    unicode-bidi: plaintext; text-align: start;
+}
 
 /* --- models --- */
 .pka-field-label {
@@ -808,12 +818,21 @@ def _start_ingest_batch(client: ApiClient, files: list) -> None:
     st.session_state["ingest_started_at"] = time.monotonic()
 
 
+@st.fragment(run_every=_INGEST_POLL_SECONDS)
 def _render_ingest_progress(client: ApiClient) -> None:
-    """Poll the running job's real, server-reported progress and rerun.
+    """Poll the running job's real, server-reported progress.
 
     The job itself advances entirely server-side (ADR-17); this only reflects its
     current state — nothing here simulates progress or invents an ETA before real
     completed-file timing exists to base one on.
+
+    `run_every` makes Streamlit itself re-execute just this fragment on a timer,
+    scoped to its own content — not the manual `time.sleep` + `st.rerun()` this
+    used before, which reran (and repainted) the *entire* page — chat, sources
+    list, models panel — every `_INGEST_POLL_SECONDS`, which is what caused the
+    visible flicker. The one-time `st.rerun()` on job completion below keeps its
+    default (app-wide) scope, since that transition legitimately needs the rest
+    of the page — e.g. the sources list — to pick up the newly indexed documents.
     """
     job_id = st.session_state["ingest_job_id"]
     try:
@@ -853,9 +872,6 @@ def _render_ingest_progress(client: ApiClient) -> None:
             client.cancel_ingestion_job(job_id)
         except ApiError as error:
             st.session_state["sources_error"] = str(error)
-
-    time.sleep(_INGEST_POLL_SECONDS)
-    st.rerun()
 
 
 def _finish_ingest_job(job: dict) -> None:
@@ -1328,10 +1344,35 @@ def _inject_composer_behavior() -> None:
                     var ceiling = 220;
                     area.style.height = Math.min(area.scrollHeight, ceiling) + "px";
                 }
+                function resetAfterSubmit(area) {
+                    // Streamlit clears the textarea's value asynchronously after a
+                    // submit, so the collapse has to be polled for rather than run
+                    // immediately alongside the click/Enter that triggered it.
+                    var attempts = 0;
+                    (function poll() {
+                        attempts += 1;
+                        if (!area.value) {
+                            area.style.height = "auto";
+                        } else if (attempts < 20) {
+                            setTimeout(poll, 25);
+                        }
+                    })();
+                }
                 function bind() {
                     var area = doc.querySelector('[data-testid="stForm"] textarea');
                     var form = doc.querySelector('[data-testid="stForm"]');
-                    if (!area || !form || area.dataset.pkaBound) return;
+                    if (!area || !form) return;
+                    var send = form.querySelector(
+                        'button[data-testid*="FormSubmit"], ' +
+                        'button[kind="primary"], button[type="submit"]'
+                    );
+                    if (send && !send.dataset.pkaBound) {
+                        send.dataset.pkaBound = "1";
+                        send.addEventListener("click", function () {
+                            resetAfterSubmit(area);
+                        });
+                    }
+                    if (area.dataset.pkaBound) return;
                     area.dataset.pkaBound = "1";
                     autoGrow(area);
                     area.addEventListener("input", function () { autoGrow(area); });
@@ -1341,11 +1382,10 @@ def _inject_composer_behavior() -> None:
                             event.isComposing) return;
                         event.preventDefault();
                         if (!area.value.trim()) return;
-                        var send = form.querySelector(
-                            'button[data-testid*="FormSubmit"], ' +
-                            'button[kind="primary"], button[type="submit"]'
-                        );
-                        if (send) send.click();
+                        if (send) {
+                            send.click();
+                            resetAfterSubmit(area);
+                        }
                     });
                 }
                 bind();
@@ -1426,14 +1466,7 @@ def _render_chat(
     # Marks this column for the chat-composer-only CSS below (the capsule, the circular
     # send button) so it never bleeds into the Models panel's own, ordinary forms.
     st.markdown('<div class="pka-composer"></div>', unsafe_allow_html=True)
-    # A widget's own session-state key cannot be reassigned after that widget has
-    # already run in the same script pass — only *before* it is next instantiated. So
-    # a successful submit sets this flag instead of clearing `ask_question` directly;
-    # it is applied here, on the following rerun, before the widget below is created.
-    if st.session_state.pop("_clear_ask_question", False):
-        st.session_state["ask_question"] = ""
-
-    with st.form("ask", clear_on_submit=False):
+    with st.form("ask", clear_on_submit=True):
         field, send = st.columns([12, 1], vertical_alignment="bottom")
         with field:
             question = st.text_area(
@@ -1452,12 +1485,6 @@ def _render_chat(
     if not submitted:
         return
 
-    # Clears the composer the instant Send is clicked, regardless of what happens next
-    # (applied on the next rerun, before the widget is instantiated again, per the
-    # flag's check above) — a real chat app never leaves the last thing you typed
-    # sitting in the box once you've sent it.
-    st.session_state["_clear_ask_question"] = True
-
     if not question.strip():
         st.session_state["chat_error"] = "Please type a question first."
         st.rerun()
@@ -1472,9 +1499,17 @@ def _render_chat(
         )
         st.rerun()
 
-    pending.markdown(
-        '<div class="pka-busy">Searching your sources…</div>', unsafe_allow_html=True
-    )
+    # Rendered into the placeholder immediately — Streamlit streams each element to the
+    # browser as it is created, so the question and busy indicator appear right away,
+    # well before the blocking `submit_query` call below returns.
+    with pending.container():
+        st.markdown(
+            f'<div class="pka-asked" dir="auto">{html.escape(question)}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="pka-busy">Searching your sources…</div>', unsafe_allow_html=True
+        )
     st.session_state["chat_error"] = None
     try:
         result = client.submit_query(question)

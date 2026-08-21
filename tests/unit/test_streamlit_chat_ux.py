@@ -1,5 +1,5 @@
-"""Chat UX: composer clears immediately on Send, and in-memory multi-exchange history
-that keeps a question even when its request fails.
+"""Chat UX: the composer is configured to clear immediately on Send, and in-memory
+multi-exchange history keeps a question even when its request fails.
 
 The success/history behavior is driven through Streamlit's own `AppTest` harness — a
 headless script-execution/session-state test tool already shipped with the `streamlit`
@@ -23,6 +23,7 @@ from pathlib import Path
 
 import httpx
 from streamlit.testing.v1 import AppTest
+from streamlit.testing.v1.element_tree import Block
 
 from streamlit_app import ApiClient
 
@@ -104,22 +105,51 @@ def _ask(at: AppTest, question: str) -> AppTest:
     return at.run()
 
 
+def _ask_form(at: AppTest) -> Block:
+    """The composer's own form block, found by the form id `st.form("ask")` assigns."""
+    forms = [
+        node
+        for node in at.main
+        if isinstance(node, Block)
+        and node.type == "form"
+        and node.proto.form.form_id == "ask"
+    ]
+    assert len(forms) == 1, f"expected exactly one 'ask' form, found {len(forms)}"
+    return forms[0]
+
+
 class TestComposerClearsImmediatelyOnSend:
-    def test_input_is_cleared_after_a_successful_answer(self) -> None:
+    """The composer clears via the form's own `clear_on_submit`, which Streamlit
+    implements in the browser (the Python side only sets the flag on the form's
+    protobuf — see `streamlit/elements/form.py`). That is deliberate: the browser
+    empties the textarea the instant Send is clicked, rather than after the blocking
+    `/query` round-trip returns, and the composer's auto-grow JS keys its height
+    reset off that same emptying. `AppTest` never runs the frontend, so it cannot
+    observe the clearing itself — what it can pin is that the form still *requests*
+    it, which is the whole of this app's side of the contract.
+    """
+
+    def test_the_composer_form_requests_clear_on_submit(self) -> None:
+        at = _launch(_client_with_queued_answers(_answer("first answer")))
+
+        assert _ask_form(at).proto.form.clear_on_submit is True
+
+    def test_the_flag_survives_a_send(self) -> None:
+        """Nothing about handling a submit re-creates the form without the flag."""
         at = _launch(_client_with_queued_answers(_answer("first answer")))
         at = _ask(at, "what is x?")
 
         assert not at.exception, at.exception
-        assert at.text_area(key="ask_question").value == ""
+        assert _ask_form(at).proto.form.clear_on_submit is True
 
-    def test_input_is_cleared_even_when_the_attempt_is_blocked(self) -> None:
-        """Clearing happens the instant Send is clicked, before any outcome is known
-        — including a pre-flight block (no documents indexed yet), not just success."""
+    def test_a_blocked_attempt_is_reported_and_makes_no_request(self) -> None:
+        """A pre-flight block (no documents indexed yet) surfaces an error and is not
+        recorded as an exchange — the composer still clears, via the same flag."""
         at = _launch(_client_with_queued_answers(documents=[]))
         at = _ask(at, "what is x?")
 
         assert not at.exception, at.exception
-        assert at.text_area(key="ask_question").value == ""
+        assert _ask_form(at).proto.form.clear_on_submit is True
         assert at.session_state["chat_error"]  # the block was real, not silently ignored
         assert at.session_state["exchanges"] == []  # a pre-flight block isn't a request
 

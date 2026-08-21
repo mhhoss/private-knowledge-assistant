@@ -42,16 +42,21 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str = "bge-m3"
-    # Defaults tuned for a slow (e.g. local CPU) embedding backend: measured
-    # ~2.5-2.8s/chunk against a real CPU-served BAAI/bge-m3, at which the library
-    # defaults (embed_batch_size=100, timeout=60s) reproducibly fail outright on any
-    # document with more than ~20-24 chunks (one over-long request per batch exceeds
-    # the timeout). embedding_batch_size=10 keeps each request comfortably short at
-    # that measured rate; embedding_timeout_seconds=120 adds margin on top for slower
-    # backends or larger chunk_size. A fast/hosted embedding provider can raise
-    # embedding_batch_size for higher throughput without hitting this failure mode.
-    embedding_batch_size: int = Field(default=10, ge=1)
-    embedding_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    # Defaults tuned for a slow (e.g. local CPU) embedding backend, at which the
+    # library defaults (embed_batch_size=100, timeout=60s) reproducibly fail outright
+    # on any document with more than a couple dozen chunks (one over-long request per
+    # batch exceeds the timeout). Re-measured 2026-08-20 (ADR-19) against a real
+    # CPU-served BAAI/bge-m3 under real ingestion load, including the moderately
+    # corrupted (broken-font) documents ADR-18 now tolerates: ~6.3-6.6s/chunk
+    # sustained for clean text, ~22-24s/chunk sustained for that corrupted family (the
+    # 2.5-2.8s/chunk this project measured previously no longer held on this
+    # deployment). embedding_batch_size=5 with embedding_timeout_seconds=300 keeps a
+    # full batch at a conservative 30s/chunk (150s) comfortably (2x) under the
+    # timeout even for the slower corrupted-family case; a fast/hosted embedding
+    # provider can raise embedding_batch_size for higher throughput without hitting
+    # this failure mode.
+    embedding_batch_size: int = Field(default=5, ge=1)
+    embedding_timeout_seconds: float = Field(default=300.0, gt=0.0)
 
     chroma_path: Path = Path("./chroma_db")
     # Chroma's own naming rule, enforced here so a bad value fails at startup.
@@ -65,7 +70,9 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1024, ge=128)
     chunk_overlap: int = Field(default=128, ge=0)
 
-    retrieval_top_k: int = Field(default=5, ge=1)
+    # Narrowed from 5 to 3 for groundedness (ADR-20); not independently re-swept,
+    # and `retrieval_min_score` below was measured at top_k=5.
+    retrieval_top_k: int = Field(default=3, ge=1)
     # Measured against BAAI/bge-m3 on the eval/ corpus (23 queries, 6 docs); see
     # ARCHITECTURE.md open question 2.
     retrieval_min_score: float = Field(default=0.47, ge=0.0, le=1.0)
@@ -253,6 +260,9 @@ def build_llm(settings: Settings) -> LLM:
         model=settings.llm_model,
         api_key=settings.llm_api_key,
         api_base=settings.llm_base_url,
+        # Same question + same context -> same answer (ADR-20): sampling variance
+        # would make the refusal sentinel and the eval corpus irreproducible.
+        temperature=0.0,
     )
 
 

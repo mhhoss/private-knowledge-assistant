@@ -55,13 +55,16 @@ _NON_TEXT_CATEGORIES = frozenset({"Cc", "Co", "Cs", "Cn"})
 # harmless short chunks; above it, the ratio is a stable signal.
 _PATHOLOGICAL_MIN_LENGTH = 100
 
-# Calibrated against a real corpus of ~35 extracted PDFs (English, Persian, mixed;
-# clean and broken-font): per-chunk ratios for clean documents, including ones with
-# an occasional single mis-mapped glyph (e.g. one `\x07` standing in for a citation
-# character), top out at ~0.32%; documents from a genuinely broken font start at
-# ~1.6%. The threshold sits at the geometric midpoint of that gap, with >2x margin
-# on both sides.
-_PATHOLOGICAL_RATIO_THRESHOLD = 0.007
+# Re-calibrated 2026-08-20 (ADR-19). The original 0.007 threshold rejected every
+# document sharing 15_abyari_ch3.pdf's broken "Amuzeh" font family, including ones
+# that are moderately corrupted but perfectly indexable once embedding batch/timeout
+# is sized for their measured cost (ADR-19): across that whole family, per-chunk
+# ratios topped out at ~6.4%. This threshold now only catches corruption far beyond
+# anything recoverable by that tuning — with >2x margin over that family's worst
+# case — while a genuinely broken-font document (all-noise glyph mapping, not a
+# partially-recoverable one) still fails fast rather than being sent to the
+# embedding backend at all.
+_PATHOLOGICAL_RATIO_THRESHOLD = 0.15
 
 
 class PathologicalTextError(RuntimeError):

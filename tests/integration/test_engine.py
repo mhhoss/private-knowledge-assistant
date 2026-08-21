@@ -99,49 +99,71 @@ class TestIngestFile:
         assert doc.filename == "report.pdf"  # ADR-3: first filename wins
 
 
-# Reproduces `15_abyari_ch3.pdf`'s real broken-font signature (Amuzeh custom
-# encoding): a `ToUnicode` CMap that maps glyphs to C0 control codepoints instead of
-# real characters, built at the byte level like every other PDF fixture here (see
-# `tests/pdf_fixtures.py`) rather than injected as pre-extracted text.
-_GARBLED_WORD = "abcdefgh\x06ijklmnop\x18qrstuvwx\x0fyzABCDEF\x19GHIJKLMN\x1d"
-GARBLED_PDF_TEXT = " ".join([_GARBLED_WORD] * 10)
+# Reproduces `15_abyari_ch3.pdf`'s/`16_apartmani3_ch2.pdf`'s real broken-font
+# signature (Amuzeh custom encoding): a `ToUnicode` CMap that maps glyphs to C0
+# control codepoints instead of real characters, built at the byte level like every
+# other PDF fixture here (see `tests/pdf_fixtures.py`) rather than injected as
+# pre-extracted text. ~8.9% non-text density - above the real family's measured
+# ceiling (6.4%, ADR-19), so it exercises the accepted side of the recalibrated 15%
+# rejection threshold with margin on both sides: this must now index (slowly, via
+# ADR-19's batch/timeout tuning), not be rejected.
+_MODERATELY_GARBLED_WORD = "abcdefgh\x06ijklmnop\x18qrstuvwx\x0fyzABCDEF\x19GHIJKLMN\x1d"
+MODERATELY_GARBLED_PDF_TEXT = " ".join([_MODERATELY_GARBLED_WORD] * 10)
+
+# ~48% non-text density - far beyond anything in the real corpus, the "all-noise"
+# case ADR-19 still rejects outright regardless of batch/timeout tuning.
+_SEVERELY_GARBLED_WORD = "".join(f"{c}\x06" for c in "ABCDEFGHIJ")
+SEVERELY_GARBLED_PDF_TEXT = " ".join([_SEVERELY_GARBLED_WORD] * 10)
+
 GARBLED_PDF_PAGE_WIDTH = 40000  # wide enough that -layout keeps every repeated word
 
 
 class TestIngestFilePathologicalText:
-    def test_broken_font_pdf_becomes_a_failed_outcome_not_a_hang(
+    def test_moderately_broken_font_pdf_matching_the_real_family_still_indexes(
+        self, store: VectorStore, embed_model: StubEmbedding
+    ) -> None:
+        outcome = do_ingest(
+            store,
+            embed_model,
+            "16_apartmani3_ch2.pdf",
+            build_pdf([MODERATELY_GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
+        )
+        assert outcome.status is IngestStatus.INDEXED
+        assert outcome.chunk_count > 0
+
+    def test_severely_broken_font_pdf_becomes_a_failed_outcome_not_a_hang(
         self, store: VectorStore, embed_model: StubEmbedding
     ) -> None:
         outcome = do_ingest(
             store,
             embed_model,
             "broken.pdf",
-            build_pdf([GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
+            build_pdf([SEVERELY_GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
         )
         assert outcome.status is IngestStatus.FAILED
         assert outcome.filename == "broken.pdf"
         assert outcome.error and "corrupted" in outcome.error
         assert store.count() == 0
 
-    def test_failure_never_reaches_the_store(
+    def test_severe_failure_never_reaches_the_store(
         self, store: VectorStore, embed_model: StubEmbedding
     ) -> None:
         do_ingest(
             store,
             embed_model,
             "broken.pdf",
-            build_pdf([GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
+            build_pdf([SEVERELY_GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
         )
         assert store.list_documents() == []
 
-    def test_a_normal_pdf_still_indexes_after_the_broken_one_fails(
+    def test_a_normal_pdf_still_indexes_after_the_severely_broken_one_fails(
         self, store: VectorStore, embed_model: StubEmbedding
     ) -> None:
         do_ingest(
             store,
             embed_model,
             "broken.pdf",
-            build_pdf([GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
+            build_pdf([SEVERELY_GARBLED_PDF_TEXT], page_width=GARBLED_PDF_PAGE_WIDTH),
         )
         outcome = do_ingest(store, embed_model, "report.pdf", build_pdf([ENGLISH_TEXT]))
 

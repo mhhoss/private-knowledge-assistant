@@ -219,18 +219,22 @@ class TestBuildEmbeddingModel:
 
 
 class TestEmbeddingBatchSizeAndTimeout:
-    """Regression coverage for the ADR-13 fix: a real CPU-served `BAAI/bge-m3` embeds
-    realistic chunks at ~2.5-2.8s/chunk (measured in the scale evaluation), at which
-    llama-index's library defaults (`embed_batch_size=100`, `timeout=60.0`) reproducibly
-    fail ingestion outright for any document over ~20-24 chunks — one over-long batch
+    """Regression coverage for the ADR-13 fix (values since re-tuned by ADR-19): a
+    real CPU-served `BAAI/bge-m3` embeds realistic chunks at a few seconds each, at
+    which llama-index's library defaults (`embed_batch_size=100`, `timeout=60.0`)
+    reproducibly fail ingestion outright for any long document — one over-long batch
     request exceeds the timeout. These tests pin that both settings actually reach the
-    embedding client, and that the *defaults* leave a safety margin at that measured
-    rate, without making any live provider calls.
+    embedding client, and that the *defaults* leave a safety margin at the measured
+    worst-case rate (ADR-19: the moderately corrupted document family ADR-18 now
+    tolerates instead of rejecting), without making any live provider calls.
     """
 
-    # Measured steady-state cost for realistic (~750-char) chunks against a real
-    # CPU-served BAAI/bge-m3 (see docs/ARCHITECTURE.md's Performance section).
-    _MEASURED_WORST_CASE_SECONDS_PER_CHUNK = 2.8
+    # Re-measured 2026-08-20 (ADR-19) against a real CPU-served BAAI/bge-m3 under
+    # real ingestion load: sustained ~22-24s/chunk for the moderately corrupted
+    # (broken-font) document family ADR-18/ADR-19 now tolerate rather than reject -
+    # the slowest real case this project has measured. 30s/chunk keeps margin above
+    # that observed rate (see docs/ARCHITECTURE.md's Performance section).
+    _MEASURED_WORST_CASE_SECONDS_PER_CHUNK = 30.0
 
     def test_configured_batch_size_and_timeout_reach_the_embedding_client(self) -> None:
         settings = Settings(
@@ -271,8 +275,8 @@ class TestEmbeddingBatchSizeAndTimeout:
     def test_default_batch_size_and_timeout_values(self) -> None:
         settings = Settings(**settings_kwargs())
 
-        assert settings.embedding_batch_size == 10
-        assert settings.embedding_timeout_seconds == 120.0
+        assert settings.embedding_batch_size == 5
+        assert settings.embedding_timeout_seconds == 300.0
 
 
 class TestBuildLlm:

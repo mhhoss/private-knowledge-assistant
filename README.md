@@ -185,8 +185,10 @@ versioned `eval/` corpus (23 queries, 6 documents), not chosen arbitrarily — s
 [ARCHITECTURE.md open question 2](docs/ARCHITECTURE.md#open-questions) for the
 evaluation. Re-measure if the embedding model changes.
 
-`EMBEDDING_BATCH_SIZE` (default 10) and `EMBEDDING_TIMEOUT_SECONDS` (default 120) default
-to values safe for slow backends; raise `EMBEDDING_BATCH_SIZE` for a fast/hosted provider
+`EMBEDDING_BATCH_SIZE` (default 5) and `EMBEDDING_TIMEOUT_SECONDS` (default 300) default
+to values safe for slow backends — re-tuned 2026-08-20 (ADR-19) against real measured
+CPU throughput, including the moderately corrupted (broken-font) documents ADR-18 now
+tolerates instead of rejecting; raise `EMBEDDING_BATCH_SIZE` for a fast/hosted provider
 to improve ingestion throughput. See the Performance / Scale section below.
 
 ### Changing providers at runtime
@@ -208,9 +210,11 @@ Embedding throughput is the ingestion bottleneck (see Performance below), and it
 almost entirely on where the embedding model runs:
 
 - **CPU** (e.g. local Ollama on a laptop/desktop with no GPU) — what this project has
-  been measured against: ~2.5–2.8s per ~750-character chunk. A large document (hundreds
-  of chunks) can take several minutes to index. Keep the low default
-  `EMBEDDING_BATCH_SIZE` here so requests stay well under `EMBEDDING_TIMEOUT_SECONDS`.
+  been measured against: a few seconds per ~750-character chunk for clean text, and up
+  to ~22–24s/chunk for a moderately corrupted (broken-font) extraction (ADR-19). A
+  large document (hundreds of chunks) can take several minutes to index. Keep the low
+  default `EMBEDDING_BATCH_SIZE` here so requests stay well under
+  `EMBEDDING_TIMEOUT_SECONDS`.
 - **GPU** (Ollama or another server with CUDA/ROCm/Metal) — the same model served on a
   GPU is typically an order of magnitude or more faster per chunk than CPU; raise
   `EMBEDDING_BATCH_SIZE` (e.g. 50–100) once you've confirmed request latency stays
